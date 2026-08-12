@@ -1,0 +1,10 @@
+{
+  "name": "hape-v-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HAPE-V multilingual HAPW rights, credit-and-HAPU AI generation and asset exercise prototype",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test"
+  }
+}
