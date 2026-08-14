@@ -7,8 +7,8 @@ const workSource = require('./work-source');
 const {
   GENERATION_FACTORS,
   generationCost,
-  redemptionHapuGrant,
-  generationHapuCost,
+  redemptionClipGrant,
+  generationClipCost,
   hapwExchangeQuote,
   HAPW_EXCHANGE_DAILY_LIMIT,
   hapwExchangeDailySnapshot,
@@ -19,6 +19,7 @@ const {
 const ROOT = path.join(__dirname, '..');
 const PUBLIC = path.join(ROOT, 'public');
 const PORT = Number(process.env.PORT || 4173);
+const HOST = process.env.HOST || '127.0.0.1';
 const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
   'Referrer-Policy': 'strict-origin-when-cross-origin',
@@ -50,7 +51,7 @@ const assetName = (asset) => `${asset.name} ${asset.tokenId}`;
 const validRequestId = value => typeof value === 'string' && value.length >= 8 && value.length <= 100;
 
 function hapwExchangePolicy() {
-  const reserveAssets = store.assets.filter(item => item.kind === 'HAPW' && item.hapuPrice > 0);
+  const reserveAssets = store.assets.filter(item => item.kind === 'HAPW' && item.clipPrice > 0);
   return {
     ...hapwExchangeDailySnapshot(store.hapwExchanges, HAPW_EXCHANGE_DAILY_LIMIT),
     inventoryTotal: reserveAssets.length,
@@ -61,7 +62,7 @@ function hapwExchangePolicy() {
 function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/overview') {
     return json(res, 200, { data: {
-      counts: { authorized: 18420, overseas: 2908, visible: 86, redeemed: store.hapwRedemptions.length, credits: store.generationAccount.balance, hapuGranted: store.generationAccount.lifetimeHapuGranted },
+      counts: { authorized: 18420, overseas: 2908, visible: 86, redeemed: store.hapwRedemptions.length, credits: store.generationAccount.balance, clipGranted: store.generationAccount.lifetimeClipGranted },
       featuredAsset: store.assets[0],
       steps: ['hold', 'redeem', 'grant', 'generate']
     } });
@@ -84,7 +85,7 @@ function handleApi(req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/assets') {
     syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
-    const assets = store.assets.filter(item => item.kind === 'HAPW' && item.owner === 'HAPE');
+    const assets = store.assets.filter(item => item.kind === 'HAPW' && item.owner === 'Clipli');
     const holdings = assets.filter(item => item.redemptionStatus !== 'redeemed');
     return json(res, 200, { data: {
       assets,
@@ -92,8 +93,8 @@ function handleApi(req, res, url) {
       transfers: store.transfers,
       exercises: store.transfers,
       platforms: store.externalPlatforms,
-      hapu: { ...store.hapu, dexPool: dexPoolSnapshot(store.hapu.dexPool), hapwExchangePolicy: hapwExchangePolicy() },
-      hapuTransactions: store.hapuTransactions,
+      clip: { ...store.clip, dexPool: dexPoolSnapshot(store.clip.dexPool), hapwExchangePolicy: hapwExchangePolicy() },
+      clipTransactions: store.clipTransactions,
       generationAccount: store.generationAccount,
       hapwRedemptions: store.hapwRedemptions,
       generations: store.generations,
@@ -103,14 +104,14 @@ function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/studio') {
     syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
     return json(res, 200, { data: {
-      assets: store.assets.filter(item => item.kind === 'HAPW' && item.owner === 'HAPE'),
+      assets: store.assets.filter(item => item.kind === 'HAPW' && item.owner === 'Clipli'),
       generationAccount: store.generationAccount,
       redemptions: store.hapwRedemptions,
       generations: store.generations,
-      hapu: { ...store.hapu, dexPool: dexPoolSnapshot(store.hapu.dexPool) }
+      clip: { ...store.clip, dexPool: dexPoolSnapshot(store.clip.dexPool) }
     } });
   }
-  if (req.method === 'GET' && url.pathname === '/api/profile') return json(res, 200, { data: { ...store.profile, hapuBalance: store.hapu.balance } });
+  if (req.method === 'GET' && url.pathname === '/api/profile') return json(res, 200, { data: { ...store.profile, clipBalance: store.clip.balance } });
 
   if (req.method === 'POST' && url.pathname === '/api/hapw/redemptions') {
     return readBody(req).then(body => {
@@ -120,7 +121,7 @@ function handleApi(req, res, url) {
         syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
         return json(res, 200, { data: { redemption: existing, generationAccount: store.generationAccount } });
       }
-      const asset = store.assets.find(item => item.id === body.assetId && item.owner === 'HAPE');
+      const asset = store.assets.find(item => item.id === body.assetId && item.owner === 'Clipli');
       if (!asset || asset.redemptionStatus !== 'available') return error(res, 400, 'hapw_not_redeemable', 'This HAPW is not available for redemption');
       if (body.accepted !== true) return error(res, 400, 'redemption_not_confirmed', 'Confirm the irreversible HAPW redemption');
       asset.redemptionStatus = 'redeemed';
@@ -128,15 +129,15 @@ function handleApi(req, res, url) {
       asset.status = '已核销';
       asset.statusEn = 'Redeemed';
       asset.statusKo = '상각 완료';
-      const hapuGranted = redemptionHapuGrant(asset.creditYield);
+      const clipGranted = redemptionClipGrant(asset.creditYield);
       const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
       const redemption = {
         id: `redeem-${Date.now()}`,
         assetId: asset.id,
-        receipt: `HAPE-LIC-${asset.tokenId.replace('#', '')}-${Date.now().toString().slice(-4)}`,
+        receipt: `Clipli-LIC-${asset.tokenId.replace('#', '')}-${Date.now().toString().slice(-4)}`,
         creditsGranted: asset.creditYield,
         creditsRemaining: asset.creditYield,
-        hapuGranted,
+        clipGranted,
         requestId: body.requestId,
         status: '有效',
         statusEn: 'Active',
@@ -144,14 +145,14 @@ function handleApi(req, res, url) {
         createdAt: now
       };
       store.hapwRedemptions.unshift(redemption);
-      store.hapu.balance += hapuGranted;
-      store.hapuTransactions.unshift({
-        id: `hapu-grant-${Date.now()}`,
+      store.clip.balance += clipGranted;
+      store.clipTransactions.unshift({
+        id: `clip-grant-${Date.now()}`,
         typeCode: 'redemptionGrant',
         type: 'HAPW 核销领取',
         typeEn: 'HAPW redemption grant',
         typeKo: 'HAPW 상각 지급',
-        amount: hapuGranted,
+        amount: clipGranted,
         counterparty: `HAPW ${asset.tokenId} · ${asset.name}`,
         counterpartyEn: `HAPW ${asset.tokenId} · ${asset.nameEn}`,
         counterpartyKo: `HAPW ${asset.tokenId} · ${asset.nameKo || asset.nameEn}`,
@@ -159,7 +160,7 @@ function handleApi(req, res, url) {
         txHash: '0xgrant…demo', createdAt: now
       });
       syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
-      return json(res, 201, { data: { redemption, generationAccount: store.generationAccount, hapuBalance: store.hapu.balance } });
+      return json(res, 201, { data: { redemption, generationAccount: store.generationAccount, clipBalance: store.clip.balance } });
     }).catch(() => error(res, 400, 'invalid_json', 'Invalid request body'));
   }
 
@@ -169,7 +170,7 @@ function handleApi(req, res, url) {
       const existing = store.generations.find(item => item.requestId === body.requestId);
       if (existing) {
         syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
-        return json(res, 200, { data: { generation: existing, generationAccount: store.generationAccount, hapuBalance: store.hapu.balance } });
+        return json(res, 200, { data: { generation: existing, generationAccount: store.generationAccount, clipBalance: store.clip.balance } });
       }
       const asset = store.assets.find(item => item.id === body.assetId);
       const duration = Number(body.duration);
@@ -178,9 +179,9 @@ function handleApi(req, res, url) {
       if (!asset || !redemption) return error(res, 400, 'license_required', 'Redeem the matching HAPW before using this material');
       if (![15, 30, 60].includes(duration) || !GENERATION_FACTORS[quality] || body.accepted !== true) return error(res, 400, 'invalid_generation', 'Select duration and quality, then confirm the material license');
       const cost = generationCost(duration, quality);
-      const hapuCost = generationHapuCost(cost);
-      if (store.generationAccount.balance < cost || redemption.creditsRemaining < cost) return error(res, 400, 'insufficient_generation_credits', 'Insufficient generation credits for this HAPW license');
-      if (store.hapu.balance < hapuCost) return error(res, 400, 'insufficient_hapu', 'Insufficient HAPU for this generation');
+      const clipCost = generationClipCost(cost);
+      if (store.generationAccount.balance < cost || redemption.creditsRemaining < cost) return error(res, 400, 'insufficient_generation_credits', 'Insufficient creation credits for this HAPW license');
+      if (store.clip.balance < clipCost) return error(res, 400, 'insufficient_clip', 'Insufficient CLIP for this generation');
 
       const validViews = 12400 + store.generations.length * 3100;
       const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
@@ -193,7 +194,7 @@ function handleApi(req, res, url) {
         duration,
         quality,
         creditsUsed: cost,
-        hapuCost,
+        clipCost,
         validViews,
         requestId: body.requestId,
         status: '已生成',
@@ -202,16 +203,16 @@ function handleApi(req, res, url) {
         createdAt: now
       };
       redemption.creditsRemaining -= cost;
-      store.hapu.balance -= hapuCost;
+      store.clip.balance -= clipCost;
       store.generations.unshift(job);
       syncGenerationAccount(store.generationAccount, store.hapwRedemptions, store.generations);
-      store.hapuTransactions.unshift({
-        id: `hapu-generation-${Date.now()}`,
+      store.clipTransactions.unshift({
+        id: `clip-generation-${Date.now()}`,
         typeCode: 'generationFee',
         type: 'AI 视频生成费',
         typeEn: 'AI video generation fee',
         typeKo: 'AI 영상 생성 수수료',
-        amount: -hapuCost,
+        amount: -clipCost,
         counterparty: job.title,
         counterpartyEn: job.titleEn,
         counterpartyKo: job.titleKo,
@@ -222,7 +223,7 @@ function handleApi(req, res, url) {
         txHash: '0xplay…demo',
         createdAt: now
       });
-      return json(res, 201, { data: { generation: job, generationAccount: store.generationAccount, hapuBalance: store.hapu.balance } });
+      return json(res, 201, { data: { generation: job, generationAccount: store.generationAccount, clipBalance: store.clip.balance } });
     }).catch(() => error(res, 400, 'invalid_json', 'Invalid request body'));
   }
 
@@ -235,12 +236,12 @@ function handleApi(req, res, url) {
       const days = Number(body.days);
       if (!asset || !asset.transferable) return error(res, 400, 'asset_unavailable', 'Asset is not available for conversion');
       if (![30, 90, 180].includes(days) || !body.region || body.accepted !== true) return error(res, 400, 'invalid_conversion', 'Please select a region, duration and accept the terms');
-      if (store.hapu.balance < 18) return error(res, 400, 'insufficient_hapu', 'Insufficient HAPU balance');
+      if (store.clip.balance < 18) return error(res, 400, 'insufficient_clip', 'Insufficient CLIP balance');
       const conversion = { id: `conversion-${Date.now()}`, requestId: body.requestId, assetId: asset.id, asset: assetName(asset), region: body.region, days, fee: 18, statusCode: 'submitted', status: '已提交', statusEn: 'Submitted', statusKo: '제출됨', createdAt: new Date().toISOString().slice(0, 10) };
       store.conversions.unshift(conversion);
-      store.hapu.balance -= 18;
-      store.hapuTransactions.unshift({
-        id: `hapu-tx-${Date.now()}`,
+      store.clip.balance -= 18;
+      store.clipTransactions.unshift({
+        id: `clip-tx-${Date.now()}`,
         typeCode: 'license',
         type: '授权手续费',
         typeEn: 'License fee',
@@ -252,7 +253,7 @@ function handleApi(req, res, url) {
         status: '已完成',
         statusEn: 'Completed',
         statusKo: '완료',
-        txHash: '0xdemo…hape',
+        txHash: '0xdemo…clipli',
         createdAt: new Date().toISOString().slice(0, 16).replace('T', ' ')
       });
       asset.status = '授权处理中'; asset.statusEn = 'License processing';
@@ -269,37 +270,37 @@ function handleApi(req, res, url) {
       const platform = store.externalPlatforms.find(item => item.code === body.platformCode);
       if (!asset || !asset.transferable) return error(res, 400, 'asset_unavailable', 'Asset is not available for exercise');
       if (!platform || body.accepted !== true) return error(res, 400, 'invalid_exercise', 'Select a third-party platform and accept the exercise confirmation');
-      const transfer = { id: `exercise-${Date.now()}`, requestId: body.requestId, assetId: asset.id, platformCode: platform.code, direction: `HAPE → ${platform.name}`, directionEn: `HAPE → ${platform.name}`, directionKo: `HAPE → ${platform.name}`, value: asset.value, statusCode: 'awaitingSignature', status: '待签名', statusEn: 'Awaiting signature', statusKo: '서명 대기', createdAt: new Date().toISOString().slice(0, 10) };
+      const transfer = { id: `exercise-${Date.now()}`, requestId: body.requestId, assetId: asset.id, platformCode: platform.code, direction: `Clipli → ${platform.name}`, directionEn: `Clipli → ${platform.name}`, directionKo: `Clipli → ${platform.name}`, value: asset.value, statusCode: 'awaitingSignature', status: '待签名', statusEn: 'Awaiting signature', statusKo: '서명 대기', createdAt: new Date().toISOString().slice(0, 10) };
       store.transfers.unshift(transfer);
       return json(res, 201, { data: transfer });
     }).catch(() => error(res, 400, 'invalid_json', 'Invalid request body'));
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/hapu/hapw-exchanges') {
+  if (req.method === 'POST' && url.pathname === '/api/clip/hapw-exchanges') {
     return readBody(req).then(body => {
       if (!validRequestId(body.requestId)) return error(res, 400, 'invalid_request_id', 'A valid operation id is required');
       const existing = store.hapwExchanges.find(item => item.requestId === body.requestId);
-      if (existing) return json(res, 200, { data: { exchange: existing, hapuBalance: store.hapu.balance } });
+      if (existing) return json(res, 200, { data: { exchange: existing, clipBalance: store.clip.balance } });
       const asset = store.assets.find(item => item.id === body.assetId);
       if (!asset || !asset.exchangeAvailable || asset.redemptionStatus !== 'available') return error(res, 400, 'hapw_reserve_unavailable', 'This reserve HAPW is unavailable');
-      if (body.accepted !== true) return error(res, 400, 'exchange_not_confirmed', 'Confirm the HAPU to HAPW exchange');
+      if (body.accepted !== true) return error(res, 400, 'exchange_not_confirmed', 'Confirm the CLIP to HAPW exchange');
       const policy = hapwExchangePolicy();
       if (policy.reached) return error(res, 429, 'hapw_exchange_daily_limit', 'The daily HAPW exchange limit has been reached');
-      const quote = hapwExchangeQuote(asset.hapuPrice, store.hapu.hapwExchangeFeeRate);
-      if (store.hapu.balance < quote.total) return error(res, 400, 'insufficient_hapu', 'Insufficient HAPU balance');
+      const quote = hapwExchangeQuote(asset.clipPrice, store.clip.hapwExchangeFeeRate);
+      if (store.clip.balance < quote.total) return error(res, 400, 'insufficient_clip', 'Insufficient CLIP balance');
       const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
       const exchange = { id: `hapw-exchange-${Date.now()}`, requestId: body.requestId, assetId: asset.id, ...quote, statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', createdAt: now };
       asset.exchangeAvailable = false;
-      store.hapu.balance -= quote.total;
+      store.clip.balance -= quote.total;
       store.hapwExchanges.unshift(exchange);
-      store.hapuTransactions.unshift({
-        id: `hapu-hapw-${Date.now()}`, typeCode: 'hapwExchange', type: 'HAPW 储备兑换', typeEn: 'HAPW reserve exchange', typeKo: 'HAPW 준비금 교환', amount: -quote.total,
+      store.clipTransactions.unshift({
+        id: `clip-hapw-${Date.now()}`, typeCode: 'hapwExchange', type: 'HAPW 储备兑换', typeEn: 'HAPW reserve exchange', typeKo: 'HAPW 준비금 교환', amount: -quote.total,
         counterparty: `HAPW ${asset.tokenId} · 本金 ${quote.price} + 手续费 ${quote.fee}`,
         counterpartyEn: `HAPW ${asset.tokenId} · price ${quote.price} + fee ${quote.fee}`,
         counterpartyKo: `HAPW ${asset.tokenId} · 가격 ${quote.price} + 수수료 ${quote.fee}`,
         statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xhapw…demo', createdAt: now
       });
-      return json(res, 201, { data: { exchange, asset, hapuBalance: store.hapu.balance } });
+      return json(res, 201, { data: { exchange, asset, clipBalance: store.clip.balance } });
     }).catch(() => error(res, 400, 'invalid_json', 'Invalid request body'));
   }
 
@@ -364,4 +365,4 @@ const server = http.createServer((req, res) => {
   return serveStatic(req, res, url);
 });
 
-server.listen(PORT, () => console.log(`HAPE-V running at http://localhost:${PORT}`));
+server.listen(PORT, HOST, () => console.log(`Clipli running at http://${HOST}:${PORT}`));

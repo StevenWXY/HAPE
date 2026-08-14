@@ -1,8 +1,8 @@
 {
-  "name": "hape-v-mvp",
+  "name": "clipli-prototype",
   "version": "0.1.0",
   "private": true,
-  "description": "HAPE-V multilingual HAPW rights, credit-and-HAPU AI generation and asset exercise prototype",
+  "description": "Multilingual Clipli prototype for HAPW authorization, Creation Credits, CLIP and AI video workflows",
   "scripts": {
     "start": "node server/index.js",
     "test": "node --test"

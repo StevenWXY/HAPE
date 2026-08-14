@@ -2,26 +2,26 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   generationCost,
-  redemptionHapuGrant,
-  generationHapuCost,
+  redemptionClipGrant,
+  generationClipCost,
   hapwExchangeQuote,
   hapwExchangeDailySnapshot,
   dexPoolSnapshot,
   syncGenerationAccount
 } = require('../server/mechanism');
 
-test('generation credits round up consistently', () => {
+test('creation credits round up consistently', () => {
   assert.equal(generationCost(15, 'standard'), 15);
   assert.equal(generationCost(15, 'pro'), 23);
   assert.equal(generationCost(30, 'pro'), 45);
   assert.throws(() => generationCost(15, 'unknown'), /invalid_generation_parameters/);
 });
 
-test('redemption grants HAPU and generation spends it by credit count', () => {
-  assert.equal(redemptionHapuGrant(150), 60);
-  assert.equal(redemptionHapuGrant(120), 48);
-  assert.equal(generationHapuCost(15), 3);
-  assert.equal(generationHapuCost(23), 5);
+test('redemption grants CLIP and generation spends it by credit count', () => {
+  assert.equal(redemptionClipGrant(150), 60);
+  assert.equal(redemptionClipGrant(120), 48);
+  assert.equal(generationClipCost(15), 3);
+  assert.equal(generationClipCost(23), 5);
 });
 
 test('reserve HAPW quote includes a rounded five percent fee', () => {
@@ -42,11 +42,11 @@ test('reserve HAPW exchange snapshot enforces a per-day limit', () => {
 });
 
 test('DEX snapshot exposes both reserves, rate, and total notional liquidity', () => {
-  assert.deepEqual(dexPoolSnapshot({ hapuReserve: 250000, usdtReserve: 25000, updatedAt: 'demo' }), {
-    hapuReserve: 250000,
+  assert.deepEqual(dexPoolSnapshot({ clipReserve: 250000, usdtReserve: 25000, updatedAt: 'demo' }), {
+    clipReserve: 250000,
     usdtReserve: 25000,
-    hapuPerUsdt: 10,
-    usdtPerHapu: 0.1,
+    clipPerUsdt: 10,
+    usdtPerClip: 0.1,
     totalLiquidityUsdt: 50000,
     updatedAt: 'demo'
   });
@@ -55,18 +55,18 @@ test('DEX snapshot exposes both reserves, rate, and total notional liquidity', (
 test('generation account is derived from redemption and generation records', () => {
   const account = {};
   const redemptions = [
-    { status: '有效', creditsGranted: 120, creditsRemaining: 97, hapuGranted: 48 },
-    { status: '有效', creditsGranted: 150, creditsRemaining: 105, hapuGranted: 60 }
+    { status: '有效', creditsGranted: 120, creditsRemaining: 97, clipGranted: 48 },
+    { status: '有效', creditsGranted: 150, creditsRemaining: 105, clipGranted: 60 }
   ];
   const generations = [
-    { creditsUsed: 23, hapuCost: 5 },
-    { creditsUsed: 45, hapuCost: 9 }
+    { creditsUsed: 23, clipCost: 5 },
+    { creditsUsed: 45, clipCost: 9 }
   ];
   assert.deepEqual(syncGenerationAccount(account, redemptions, generations), {
     balance: 202,
     lifetimeGranted: 270,
     lifetimeUsed: 68,
-    lifetimeHapuGranted: 108,
-    lifetimeHapuSpent: 14
+    lifetimeClipGranted: 108,
+    lifetimeClipSpent: 14
   });
 });

@@ -1,6 +1,6 @@
 const GENERATION_FACTORS = Object.freeze({ standard: 1, pro: 1.5 });
-const HAPU_GRANT_PER_CREDIT = 0.4;
-const HAPU_COST_PER_CREDIT = 0.2;
+const CLIP_GRANT_PER_CREDIT = 0.4;
+const CLIP_COST_PER_CREDIT = 0.2;
 const HAPW_EXCHANGE_FEE_RATE = 0.05;
 const HAPW_EXCHANGE_DAILY_LIMIT = 2;
 
@@ -11,16 +11,16 @@ function generationCost(duration, quality) {
   return Math.ceil(seconds * factor);
 }
 
-function redemptionHapuGrant(credits) {
+function redemptionClipGrant(credits) {
   const value = Number(credits);
   if (!Number.isFinite(value) || value <= 0) throw new RangeError('invalid_credit_grant');
-  return Math.floor(value * HAPU_GRANT_PER_CREDIT);
+  return Math.floor(value * CLIP_GRANT_PER_CREDIT);
 }
 
-function generationHapuCost(credits) {
+function generationClipCost(credits) {
   const value = Number(credits);
   if (!Number.isFinite(value) || value <= 0) throw new RangeError('invalid_credit_cost');
-  return Math.ceil(value * HAPU_COST_PER_CREDIT);
+  return Math.ceil(value * CLIP_COST_PER_CREDIT);
 }
 
 function hapwExchangeQuote(price, feeRate = HAPW_EXCHANGE_FEE_RATE) {
@@ -45,14 +45,14 @@ function hapwExchangeDailySnapshot(exchanges, dailyLimit = HAPW_EXCHANGE_DAILY_L
 }
 
 function dexPoolSnapshot(pool) {
-  const hapuReserve = Number(pool.hapuReserve);
+  const clipReserve = Number(pool.clipReserve);
   const usdtReserve = Number(pool.usdtReserve);
-  if (!Number.isFinite(hapuReserve) || hapuReserve <= 0 || !Number.isFinite(usdtReserve) || usdtReserve <= 0) throw new RangeError('invalid_liquidity_pool');
+  if (!Number.isFinite(clipReserve) || clipReserve <= 0 || !Number.isFinite(usdtReserve) || usdtReserve <= 0) throw new RangeError('invalid_liquidity_pool');
   return {
-    hapuReserve,
+    clipReserve,
     usdtReserve,
-    hapuPerUsdt: hapuReserve / usdtReserve,
-    usdtPerHapu: usdtReserve / hapuReserve,
+    clipPerUsdt: clipReserve / usdtReserve,
+    usdtPerClip: usdtReserve / clipReserve,
     totalLiquidityUsdt: usdtReserve * 2,
     updatedAt: pool.updatedAt
   };
@@ -64,20 +64,20 @@ function syncGenerationAccount(account, redemptions, generations) {
     .reduce((sum, item) => sum + item.creditsRemaining, 0);
   account.lifetimeGranted = redemptions.reduce((sum, item) => sum + item.creditsGranted, 0);
   account.lifetimeUsed = generations.reduce((sum, item) => sum + item.creditsUsed, 0);
-  account.lifetimeHapuGranted = redemptions.reduce((sum, item) => sum + (item.hapuGranted || 0), 0);
-  account.lifetimeHapuSpent = generations.reduce((sum, item) => sum + (item.hapuCost || 0), 0);
+  account.lifetimeClipGranted = redemptions.reduce((sum, item) => sum + (item.clipGranted || 0), 0);
+  account.lifetimeClipSpent = generations.reduce((sum, item) => sum + (item.clipCost || 0), 0);
   return account;
 }
 
 module.exports = {
   GENERATION_FACTORS,
-  HAPU_GRANT_PER_CREDIT,
-  HAPU_COST_PER_CREDIT,
+  CLIP_GRANT_PER_CREDIT,
+  CLIP_COST_PER_CREDIT,
   HAPW_EXCHANGE_FEE_RATE,
   HAPW_EXCHANGE_DAILY_LIMIT,
   generationCost,
-  redemptionHapuGrant,
-  generationHapuCost,
+  redemptionClipGrant,
+  generationClipCost,
   hapwExchangeQuote,
   hapwExchangeDailySnapshot,
   dexPoolSnapshot,

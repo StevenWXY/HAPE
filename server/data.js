@@ -9,9 +9,9 @@ const works = [
     categoryKo: '전통 서사',
     duration: '00:58',
     views: 128400,
-    creator: 'HAPE创作组',
-    creatorEn: 'HAPE Studio',
-    creatorKo: 'HAPE 크리에이티브 팀',
+    creator: 'Clipli创作组',
+    creatorEn: 'Clipli Studio',
+    creatorKo: 'Clipli 크리에이티브 팀',
     summary: '一百零八种数字身份，在霓虹水泊重新集结。',
     summaryEn: '108 digital identities regroup in a neon marsh.',
     summaryKo: '108개의 디지털 정체성이 네온빛 물가에서 다시 모인다.',
@@ -110,22 +110,22 @@ const works = [
 ];
 
 const assets = [
-  { id: 'asset-2048', kind: 'HAPW', tokenId: '#2048', name: '海风计划', nameEn: 'Sea Breeze', nameKo: '바닷바람 프로젝트', value: 18800, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'HAPE', rightsHolder: '海风计划版权方', rightsHolderEn: 'Sea Breeze rights holder', rightsHolderKo: '바닷바람 프로젝트 저작권자', authorizationScope: '角色、场景与叙事元素的 AI 视频改编', authorizationScopeEn: 'AI video adaptation of characters, scenes and story elements', authorizationScopeKo: '캐릭터, 장면 및 서사 요소의 AI 영상 각색', creditYield: 150, hapuPrice: 520, exchangeAvailable: true, redemptionStatus: 'available' },
-  { id: 'asset-771', kind: 'HAPW', tokenId: '#771', name: '夜航者', nameEn: 'Night Flyers', nameKo: '야간 비행자', value: 12600, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'HAPE', rightsHolder: 'MINTLAB', rightsHolderEn: 'MINTLAB', rightsHolderKo: 'MINTLAB', authorizationScope: '角色设定、城市空间与非独家短视频改编', authorizationScopeEn: 'Characters, city environments and non-exclusive short-video adaptations', authorizationScopeKo: '캐릭터 설정, 도시 공간 및 비독점 숏폼 영상 각색', creditYield: 120, hapuPrice: 390, exchangeAvailable: true, redemptionStatus: 'available' },
-  { id: 'asset-109', kind: 'HAPW', tokenId: '#109', name: '远岸', nameEn: 'Far Shore', nameKo: '먼 해안', value: 9900, status: '权属复核中', statusEn: 'Rights review', statusKo: '권리 검토 중', transferable: false, owner: 'HAPE', rightsHolder: '远岸版权组', rightsHolderEn: 'Far Shore rights group', rightsHolderKo: '먼 해안 권리 그룹', authorizationScope: '待版权持有方完成授权复核', authorizationScopeEn: 'Pending final authorization review by the rights holder', authorizationScopeKo: '저작권자의 최종 이용 허가 검토 대기 중', creditYield: 90, hapuPrice: 0, exchangeAvailable: false, redemptionStatus: 'restricted' },
-  { id: 'asset-332', kind: 'HAPW', tokenId: '#332', name: '风暴档案', nameEn: 'Storm Archive', nameKo: '폭풍 기록', value: 7200, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'HAPE', rightsHolder: 'Kite Studio', rightsHolderEn: 'Kite Studio', rightsHolderKo: 'Kite Studio', authorizationScope: '场景素材与实验影像再创作', authorizationScopeEn: 'Scene materials and experimental video derivatives', authorizationScopeKo: '장면 소재 및 실험 영상의 2차 창작', creditYield: 100, hapuPrice: 280, exchangeAvailable: true, redemptionStatus: 'available' },
-  { id: 'asset-528', kind: 'HAPW', tokenId: '#528', name: '水浒角色集', nameEn: 'Water Margin Cast', nameKo: '수호전 인물집', value: 3800, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'HAPE', rightsHolder: 'HAPE 创作组', rightsHolderEn: 'HAPE Studio', rightsHolderKo: 'HAPE 크리에이티브 팀', authorizationScope: '已登记角色素材的 AI 动画短片生成', authorizationScopeEn: 'AI animated shorts using the registered character set', authorizationScopeKo: '등록된 캐릭터 소재를 사용한 AI 애니메이션 단편 생성', creditYield: 120, hapuPrice: 220, exchangeAvailable: true, redemptionStatus: 'available' },
-  { id: 'asset-903', kind: 'HAPW', tokenId: '#903', name: '低语岛', nameEn: 'Whisper Island', nameKo: '속삭임의 섬', value: 2140, status: '已核销', statusEn: 'Redeemed', statusKo: '상각 완료', transferable: false, owner: 'HAPE', rightsHolder: 'Mori', rightsHolderEn: 'Mori', rightsHolderKo: 'Mori', authorizationScope: '岛屿场景、声音设定与短视频改编', authorizationScopeEn: 'Island scenes, sound concepts and short-video adaptations', authorizationScopeKo: '섬 장면, 사운드 콘셉트 및 숏폼 영상 각색', creditYield: 120, hapuPrice: 0, exchangeAvailable: false, redemptionStatus: 'redeemed' }
+  { id: 'asset-2048', kind: 'HAPW', tokenId: '#2048', name: '海风计划', nameEn: 'Sea Breeze', nameKo: '바닷바람 프로젝트', value: 18800, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'Clipli', rightsHolder: '海风计划版权方', rightsHolderEn: 'Sea Breeze rights holder', rightsHolderKo: '바닷바람 프로젝트 저작권자', authorizationScope: '角色、场景与叙事元素的 AI 视频改编', authorizationScopeEn: 'AI video adaptation of characters, scenes and story elements', authorizationScopeKo: '캐릭터, 장면 및 서사 요소의 AI 영상 각색', creditYield: 150, clipPrice: 520, exchangeAvailable: true, redemptionStatus: 'available' },
+  { id: 'asset-771', kind: 'HAPW', tokenId: '#771', name: '夜航者', nameEn: 'Night Flyers', nameKo: '야간 비행자', value: 12600, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'Clipli', rightsHolder: 'MINTLAB', rightsHolderEn: 'MINTLAB', rightsHolderKo: 'MINTLAB', authorizationScope: '角色设定、城市空间与非独家短视频改编', authorizationScopeEn: 'Characters, city environments and non-exclusive short-video adaptations', authorizationScopeKo: '캐릭터 설정, 도시 공간 및 비독점 숏폼 영상 각색', creditYield: 120, clipPrice: 390, exchangeAvailable: true, redemptionStatus: 'available' },
+  { id: 'asset-109', kind: 'HAPW', tokenId: '#109', name: '远岸', nameEn: 'Far Shore', nameKo: '먼 해안', value: 9900, status: '权属复核中', statusEn: 'Rights review', statusKo: '권리 검토 중', transferable: false, owner: 'Clipli', rightsHolder: '远岸版权组', rightsHolderEn: 'Far Shore rights group', rightsHolderKo: '먼 해안 권리 그룹', authorizationScope: '待版权持有方完成授权复核', authorizationScopeEn: 'Pending final authorization review by the rights holder', authorizationScopeKo: '저작권자의 최종 이용 허가 검토 대기 중', creditYield: 90, clipPrice: 0, exchangeAvailable: false, redemptionStatus: 'restricted' },
+  { id: 'asset-332', kind: 'HAPW', tokenId: '#332', name: '风暴档案', nameEn: 'Storm Archive', nameKo: '폭풍 기록', value: 7200, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'Clipli', rightsHolder: 'Kite Studio', rightsHolderEn: 'Kite Studio', rightsHolderKo: 'Kite Studio', authorizationScope: '场景素材与实验影像再创作', authorizationScopeEn: 'Scene materials and experimental video derivatives', authorizationScopeKo: '장면 소재 및 실험 영상의 2차 창작', creditYield: 100, clipPrice: 280, exchangeAvailable: true, redemptionStatus: 'available' },
+  { id: 'asset-528', kind: 'HAPW', tokenId: '#528', name: '水浒角色集', nameEn: 'Water Margin Cast', nameKo: '수호전 인물집', value: 3800, status: '可核销', statusEn: 'Redeemable', statusKo: '상각 가능', transferable: true, owner: 'Clipli', rightsHolder: 'Clipli 创作组', rightsHolderEn: 'Clipli Studio', rightsHolderKo: 'Clipli 크리에이티브 팀', authorizationScope: '已登记角色素材的 AI 动画短片生成', authorizationScopeEn: 'AI animated shorts using the registered character set', authorizationScopeKo: '등록된 캐릭터 소재를 사용한 AI 애니메이션 단편 생성', creditYield: 120, clipPrice: 220, exchangeAvailable: true, redemptionStatus: 'available' },
+  { id: 'asset-903', kind: 'HAPW', tokenId: '#903', name: '低语岛', nameEn: 'Whisper Island', nameKo: '속삭임의 섬', value: 2140, status: '已核销', statusEn: 'Redeemed', statusKo: '상각 완료', transferable: false, owner: 'Clipli', rightsHolder: 'Mori', rightsHolderEn: 'Mori', rightsHolderKo: 'Mori', authorizationScope: '岛屿场景、声音设定与短视频改编', authorizationScopeEn: 'Island scenes, sound concepts and short-video adaptations', authorizationScopeKo: '섬 장면, 사운드 콘셉트 및 숏폼 영상 각색', creditYield: 120, clipPrice: 0, exchangeAvailable: false, redemptionStatus: 'redeemed' }
 ];
 
 const transfers = [
-  { id: 'exercise-1', requestId: 'seed-exercise-1', assetId: 'asset-2048', platformCode: 'haiwen', direction: 'HAPE → 海文发', directionEn: 'HAPE → HAIWEN', value: 18800, statusCode: 'completed', status: '已完成', statusEn: 'Completed', createdAt: '2026-08-03' },
-  { id: 'exercise-2', requestId: 'seed-exercise-2', assetId: 'asset-771', platformCode: 'opensea', direction: 'HAPE → OpenSea', directionEn: 'HAPE → OpenSea', value: 12600, statusCode: 'pending', status: '待确认', statusEn: 'Pending', createdAt: '2026-07-29' },
-  { id: 'exercise-3', requestId: 'seed-exercise-3', assetId: 'asset-109', platformCode: 'superrare', direction: 'HAPE → SuperRare', directionEn: 'HAPE → SuperRare', value: 9900, statusCode: 'archived', status: '已归档', statusEn: 'Archived', createdAt: '2026-06-18' }
+  { id: 'exercise-1', requestId: 'seed-exercise-1', assetId: 'asset-2048', platformCode: 'haiwen', direction: 'Clipli → 海文发', directionEn: 'Clipli → HAIWEN', value: 18800, statusCode: 'completed', status: '已完成', statusEn: 'Completed', createdAt: '2026-08-03' },
+  { id: 'exercise-2', requestId: 'seed-exercise-2', assetId: 'asset-771', platformCode: 'opensea', direction: 'Clipli → OpenSea', directionEn: 'Clipli → OpenSea', value: 12600, statusCode: 'pending', status: '待确认', statusEn: 'Pending', createdAt: '2026-07-29' },
+  { id: 'exercise-3', requestId: 'seed-exercise-3', assetId: 'asset-109', platformCode: 'superrare', direction: 'Clipli → SuperRare', directionEn: 'Clipli → SuperRare', value: 9900, statusCode: 'archived', status: '已归档', statusEn: 'Archived', createdAt: '2026-06-18' }
 ];
 
-const hapu = {
-  symbol: 'HAPU',
+const clip = {
+  symbol: 'CLIP',
   balance: 3460,
   supplyPolicy: '不设总量',
   supplyPolicyEn: 'No capped supply',
@@ -140,16 +140,16 @@ const hapu = {
   contractStatusEn: 'Official contract details pending',
   contractStatusKo: '공식 컨트랙트 정보 공개 예정',
   dexUrl: 'https://app.uniswap.org/swap/',
-  dexPool: { hapuReserve: 250000, usdtReserve: 25000, updatedAt: '2026-08-10 16:00' },
+  dexPool: { clipReserve: 250000, usdtReserve: 25000, updatedAt: '2026-08-10 16:00' },
   hapwExchangeFeeRate: 0.05
 };
 
-const hapuTransactions = [
-  { id: 'hapu-tx-grant-1', typeCode: 'redemptionGrant', type: 'HAPW 核销领取', typeEn: 'HAPW redemption grant', amount: 48, counterparty: 'HAPW #903 · 低语岛', counterpartyEn: 'HAPW #903 · Whisper Island', counterpartyKo: 'HAPW #903 · 속삭임의 섬', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xgrant…903a', createdAt: '2026-08-06 09:30' },
-  { id: 'hapu-tx-generate-1', typeCode: 'generationFee', type: 'AI 视频生成费', typeEn: 'AI video generation fee', amount: -5, counterparty: '《低语岛：潮汐试片》', counterpartyEn: 'Whisper Island: Tide Test', counterpartyKo: '속삭임의 섬: 조수 테스트', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xgen…903a', createdAt: '2026-08-06 17:42' },
-  { id: 'hapu-tx-2', typeCode: 'license', type: '授权手续费', typeEn: 'License fee', amount: -18, counterparty: 'HAPW #2048 · 海风计划', counterpartyEn: 'HAPW #2048 · Sea Breeze', counterpartyKo: 'HAPW #2048 · 바닷바람 프로젝트', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xa83d…71b4', createdAt: '2026-08-03 09:42' },
-  { id: 'hapu-tx-3', typeCode: 'dex', type: 'DEX 购入', typeEn: 'DEX purchase', amount: 1200, counterparty: '外部 DEX', counterpartyEn: 'External DEX', counterpartyKo: '외부 DEX', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0x08be…d990', createdAt: '2026-07-28 19:05' },
-  { id: 'hapu-tx-4', typeCode: 'localization', type: '本地化服务', typeEn: 'Localization service', amount: -60, counterparty: '海文发本地化服务', counterpartyEn: 'HAIWEN localization', counterpartyKo: 'HAIWEN 현지화 서비스', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0x7dd1…4e18', createdAt: '2026-07-22 11:16' }
+const clipTransactions = [
+  { id: 'clip-tx-grant-1', typeCode: 'redemptionGrant', type: 'HAPW 核销领取', typeEn: 'HAPW redemption grant', amount: 48, counterparty: 'HAPW #903 · 低语岛', counterpartyEn: 'HAPW #903 · Whisper Island', counterpartyKo: 'HAPW #903 · 속삭임의 섬', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xgrant…903a', createdAt: '2026-08-06 09:30' },
+  { id: 'clip-tx-generate-1', typeCode: 'generationFee', type: 'AI 视频生成费', typeEn: 'AI video generation fee', amount: -5, counterparty: '《低语岛：潮汐试片》', counterpartyEn: 'Whisper Island: Tide Test', counterpartyKo: '속삭임의 섬: 조수 테스트', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xgen…903a', createdAt: '2026-08-06 17:42' },
+  { id: 'clip-tx-2', typeCode: 'license', type: '授权手续费', typeEn: 'License fee', amount: -18, counterparty: 'HAPW #2048 · 海风计划', counterpartyEn: 'HAPW #2048 · Sea Breeze', counterpartyKo: 'HAPW #2048 · 바닷바람 프로젝트', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0xa83d…71b4', createdAt: '2026-08-03 09:42' },
+  { id: 'clip-tx-3', typeCode: 'dex', type: 'DEX 购入', typeEn: 'DEX purchase', amount: 1200, counterparty: '外部 DEX', counterpartyEn: 'External DEX', counterpartyKo: '외부 DEX', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0x08be…d990', createdAt: '2026-07-28 19:05' },
+  { id: 'clip-tx-4', typeCode: 'localization', type: '本地化服务', typeEn: 'Localization service', amount: -60, counterparty: '海文发本地化服务', counterpartyEn: 'HAIWEN localization', counterpartyKo: 'HAIWEN 현지화 서비스', statusCode: 'completed', status: '已完成', statusEn: 'Completed', statusKo: '완료', txHash: '0x7dd1…4e18', createdAt: '2026-07-22 11:16' }
 ];
 
 const generationAccount = {
@@ -158,20 +158,20 @@ const generationAccount = {
   lifetimeUsed: 23,
   standardFactor: 1,
   proFactor: 1.5,
-  hapuGrantPerCredit: 0.4,
-  hapuCostPerCredit: 0.2,
-  lifetimeHapuGranted: 48,
-  lifetimeHapuSpent: 5
+  clipGrantPerCredit: 0.4,
+  clipCostPerCredit: 0.2,
+  lifetimeClipGranted: 48,
+  lifetimeClipSpent: 5
 };
 
 const hapwRedemptions = [
   {
     id: 'redeem-903',
     assetId: 'asset-903',
-    receipt: 'HAPE-LIC-903-A1',
+    receipt: 'Clipli-LIC-903-A1',
     creditsGranted: 120,
     creditsRemaining: 97,
-    hapuGranted: 48,
+    clipGranted: 48,
     requestId: 'seed-redeem-903',
     status: '有效',
     statusEn: 'Active',
@@ -191,7 +191,7 @@ const generations = [
     quality: 'pro',
     creditsUsed: 23,
     validViews: 18600,
-    hapuCost: 5,
+    clipCost: 5,
     requestId: 'seed-video-903-1',
     status: '已生成',
     statusEn: 'Generated',
@@ -222,4 +222,4 @@ const externalPlatforms = [
   { code: 'artblocks', name: 'Art Blocks', url: 'https://www.artblocks.io/' }
 ];
 
-module.exports = { works, assets, transfers, hapu, hapuTransactions, generationAccount, hapwRedemptions, generations, profile, conversions, hapwExchanges, externalPlatforms };
+module.exports = { works, assets, transfers, clip, clipTransactions, generationAccount, hapwRedemptions, generations, profile, conversions, hapwExchanges, externalPlatforms };
