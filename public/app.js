@@ -266,6 +266,7 @@ function pageHead(eyebrow, title, lead, action) {
 }
 
 function header() {
+  const logoSrc = state.theme === "dark" ? "/clipli-logo-dark.png" : "/clipli-logo.png";
   const nav = navItems.map(item => {
     const active = state.route === item[0]
       || (item[0] === "/works" && state.route.startsWith("/work/"))
@@ -274,7 +275,7 @@ function header() {
   }).join("");
   return [
     '<header class="site-header"><div class="nav-shell">',
-    '<a class="brand" href="#/" aria-label="Clipli · Create, click, grow"><span class="brand-mark">C</span><span class="brand-word"><b>Clipli</b><small>Create · Click · Grow</small></span></a>',
+    '<a class="brand" href="#/" aria-label="Clipli · Create, click, grow"><img class="brand-logo" src="', logoSrc, '" alt="Clipli"><span class="brand-word"><small>Create · Click · Grow</small></span></a>',
     '<nav class="nav-links ', state.menuOpen ? "open" : "", '" aria-label="', t("primaryNavigation"), '">', nav, '</nav>',
     '<div class="nav-actions"><label class="lang-switch"><span class="visually-hidden">', t("language"), '</span><select class="language-select" data-language aria-label="', t("language"), '">',
     [["zh", "中文"], ["en", "EN"], ["es", "ES"], ["ja", "日本語"], ["fr", "FR"], ["ko", "한국어"]].map(item => '<option value="' + item[0] + '" ' + (state.lang === item[0] ? "selected" : "") + '>' + item[1] + '</option>').join(""),
@@ -309,7 +310,7 @@ function bindGlobal() {
     document.documentElement.dataset.theme = state.theme;
     localStorage.setItem("clipli-theme", state.theme);
     const themeColor = document.querySelector('meta[name="theme-color"]');
-    if (themeColor) themeColor.content = state.theme === "dark" ? "#11110f" : "#f2efe7";
+    if (themeColor) themeColor.content = state.theme === "dark" ? "#0e0c15" : "#faf9fb";
     render();
   });
   const menu = document.getElementById("menu-toggle");
@@ -856,7 +857,7 @@ async function render() {
   const titleKey = state.route.startsWith("/work/") ? "details" : routeTitles[state.route];
   document.title = "Clipli · " + t(titleKey || "navHome");
   const themeColor = document.querySelector('meta[name="theme-color"]');
-  if (themeColor) themeColor.content = state.theme === "dark" ? "#11110f" : "#f2efe7";
+  if (themeColor) themeColor.content = state.theme === "dark" ? "#0e0c15" : "#faf9fb";
   loading();
   try {
     if (state.route === "/") return await renderHome();
