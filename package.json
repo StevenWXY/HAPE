@@ -2,9 +2,10 @@
   "name": "clipli-prototype",
   "version": "0.1.0",
   "private": true,
-  "description": "Multilingual Clipli prototype for HAPW authorization, Creation Credits, CLIP and AI video workflows",
+  "description": "Go-powered multilingual Clipli prototype for HAPW authorization, Creation Credits, CLIP and AI video workflows",
   "scripts": {
-    "start": "node server/index.js",
-    "test": "node --test"
+    "start": "go run ./cmd/server",
+    "test": "go test ./...",
+    "format": "gofmt -w cmd internal"
   }
 }

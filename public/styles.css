@@ -369,6 +369,35 @@ h1 { max-width: 760px; margin-bottom: 18px; font-size: 74px; line-height: 1.1; }
 .ledger-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin-bottom: 26px; }
 .ledger-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .token-card { min-height: 250px; padding: 25px; border: 1px solid var(--line); background: var(--panel); box-shadow: var(--small-shadow); }
+.asset-integrity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin: 0 0 26px; }
+.integrity-panel, .treasury-section { border: 1px solid var(--line); background: var(--panel); box-shadow: var(--small-shadow); }
+.integrity-panel { padding: 24px; }
+.integrity-panel > header, .treasury-section > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.integrity-panel h2, .treasury-section h2 { margin: 3px 0 0; font-size: 23px; }
+.integrity-panel > p, .treasury-section header p { max-width: 620px; color: var(--muted); line-height: 1.6; }
+.integrity-badge { display: inline-flex; align-items: center; min-height: 26px; padding: 0 9px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.integrity-badge.is-good { border-color: var(--accent); color: var(--accent); }
+.source-list { display: grid; gap: 0; padding: 0; margin: 18px 0 0; list-style: none; border-top: 1px solid var(--line); }
+.source-list li { display: grid; grid-template-columns: 9px 1fr auto; gap: 11px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.source-list li strong, .source-list li small { display: block; }
+.source-list li small { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.source-list li b { font-variant-numeric: tabular-nums; }
+.source-status { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.source-status.synced { background: var(--success); }
+.source-status.failed { background: var(--danger); }
+.integrity-panel footer, .treasury-section footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 17px; color: var(--muted); font-size: 12px; }
+.integrity-panel footer strong { color: var(--text); font-weight: 600; }
+.treasury-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 20px 0 0; }
+.treasury-grid div { padding: 12px; background: var(--sunken); border: 1px solid var(--line); }
+.treasury-grid dt, .treasury-grid dd { margin: 0; }
+.treasury-grid dt { color: var(--muted); font-size: 11px; }
+.treasury-grid dd { margin-top: 5px; font-variant-numeric: tabular-nums; font-weight: 650; }
+.treasury-section { margin: 0 0 26px; padding: 28px; }
+.treasury-ledger { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 21px; background: var(--line); border: 1px solid var(--line); }
+.treasury-ledger > div { display: grid; gap: 7px; padding: 16px; background: var(--panel); }
+.treasury-ledger small { color: var(--muted); }
+.treasury-ledger strong { font-variant-numeric: tabular-nums; }
+.treasury-note { margin: 18px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .hapw-card { border-top: 4px solid var(--coral); }
 .clip-card { border-top: 4px solid var(--mint); }
 .token-heading { display: flex; align-items: center; gap: 12px; }
@@ -727,6 +756,8 @@ select, input[type="text"] { width: 100%; min-height: 46px; padding: 10px 12px; 
   .clip-metric:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
   .clip-play-grid { grid-template-columns: 1fr; }
   .ledger-grid.three { grid-template-columns: 1fr; }
+  .asset-integrity-grid { grid-template-columns: 1fr; }
+  .treasury-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-grid.four { grid-template-columns: repeat(2, 1fr); }
   .formula-grid { grid-template-columns: 1fr; }
   .studio-flow > div { grid-template-columns: 1fr; }
@@ -777,6 +808,7 @@ select, input[type="text"] { width: 100%; min-height: 46px; padding: 10px 12px; 
   .insight-head > strong { font-size: 30px; }
   .home-chart { height: 112px; }
   .feature-grid, .steps, .stat-grid, .stat-grid.four, .work-grid, .role-grid, .ledger-grid, .ledger-grid.three { grid-template-columns: 1fr; }
+  .treasury-ledger { grid-template-columns: 1fr; }
   .step { border-right: 0; border-bottom: 1px solid var(--line); }
   .step:last-child { border-bottom: 0; }
   .work-visual { min-height: 210px; }

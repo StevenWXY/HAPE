@@ -1,0 +1,1366 @@
+openapi: 3.1.0
+info:
+  title: Clipli API
+  version: 1.0.0
+  description: |
+    Clipli HAPW asset, authorization, redemption, exercise, exchange and AI creation API for external partners.
+    HAPW facts are read from external platform sources and returned with source and synchronization metadata.
+    Authentication, deployment domain, rate limits and enabled operations are configured per integration agreement.
+servers:
+  - url: https://{apiHost}
+    description: Deployed Clipli API base URL supplied during partner onboarding
+    variables:
+      apiHost:
+        default: api.example.com
+        description: Replace with the API hostname supplied by Clipli
+tags:
+  - name: System
+  - name: HAPW Assets
+  - name: HAPW Redemptions
+  - name: HAPW Exercises
+  - name: HAPW Exchanges
+  - name: Creation
+  - name: Account
+  - name: CLIP Treasury
+  - name: Integrations
+  - name: Compatibility
+paths:
+  /api/health:
+    get:
+      tags: [System]
+      summary: Check API health
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is available
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status, service, time]
+                    properties:
+                      status: { type: string, const: ok }
+                      service: { type: string, const: clipli-api }
+                      time: { type: string, format: date-time }
+
+  /api/v1/hapw/summary:
+    get:
+      tags: [HAPW Assets]
+      summary: Get HAPW portfolio summary
+      operationId: getHAPWSummary
+      responses:
+        '200':
+          description: HAPW summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HAPWSummaryEnvelope'
+
+  /api/v1/hapw/assets:
+    get:
+      tags: [HAPW Assets]
+      summary: List and filter HAPW assets
+      operationId: listHAPWAssets
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Match ID, token ID, name or rights holder
+        - name: status
+          in: query
+          schema: { type: string, enum: [available, redeemed, restricted] }
+        - name: owner
+          in: query
+          schema: { type: string }
+        - name: rightsHolder
+          in: query
+          schema: { type: string }
+        - name: redeemable
+          in: query
+          schema: { type: boolean }
+        - name: exchangeAvailable
+          in: query
+          schema: { type: boolean }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [tokenId, value, -value, issuedAt, -issuedAt] }
+      responses:
+        '200':
+          description: Paginated HAPW assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HAPWAssetListEnvelope'
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/hapw/assets/{assetId}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [HAPW Assets]
+      summary: Get a HAPW asset with related works and available actions
+      operationId: getHAPWAsset
+      responses:
+        '200':
+          description: HAPW asset detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HAPWAssetDetailEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/assets/{assetId}/authorization:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [HAPW Assets]
+      summary: Get HAPW authorization scope and provenance
+      operationId: getHAPWAuthorization
+      responses:
+        '200':
+          description: Authorization and certificate data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [assetId, tokenId, authorization, provenance]
+                    properties:
+                      assetId: { type: string }
+                      tokenId: { type: string }
+                      authorization: { $ref: '#/components/schemas/Authorization' }
+                      provenance: { $ref: '#/components/schemas/Provenance' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/assets/{assetId}/history:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [HAPW Assets]
+      summary: Get issuance, redemption, creation, exercise and exchange history
+      operationId: getHAPWHistory
+      responses:
+        '200':
+          description: Ordered HAPW asset events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetEventListEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/assets/{assetId}/works:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [HAPW Assets]
+      summary: List works linked to a HAPW asset
+      operationId: listHAPWWorks
+      responses:
+        '200':
+          description: Linked works
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkListEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/assets/{assetId}/exchange-quote:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [HAPW Exchanges]
+      summary: Quote CLIP required for a reserve HAPW
+      operationId: quoteHAPWExchange
+      responses:
+        '200':
+          description: Indicative 60-second quote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExchangeQuoteEnvelope'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/redemptions:
+    get:
+      tags: [HAPW Redemptions]
+      summary: List HAPW redemptions
+      operationId: listHAPWRedemptions
+      parameters:
+        - $ref: '#/components/parameters/AssetIdQuery'
+      responses:
+        '200':
+          description: HAPW redemptions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedemptionListEnvelope'
+    post:
+      tags: [HAPW Redemptions]
+      summary: Irreversibly redeem HAPW and grant credits plus CLIP
+      operationId: createHAPWRedemption
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RedemptionRequest' }
+      responses:
+        '201':
+          description: HAPW redeemed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedemptionResultEnvelope' }
+        '200':
+          description: Existing result returned for the same requestId
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RedemptionResultEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/hapw/redemptions/{redemptionId}:
+    parameters:
+      - name: redemptionId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [HAPW Redemptions]
+      summary: Get a HAPW redemption receipt
+      operationId: getHAPWRedemption
+      responses:
+        '200':
+          description: Redemption receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/HAPWRedemption' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/hapw/exercises:
+    get:
+      tags: [HAPW Exercises]
+      summary: List third-party HAPW exercise requests
+      operationId: listHAPWExercises
+      parameters:
+        - $ref: '#/components/parameters/AssetIdQuery'
+      responses:
+        '200':
+          description: Exercise records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExerciseListEnvelope' }
+    post:
+      tags: [HAPW Exercises]
+      summary: Create a third-party HAPW exercise signing request
+      operationId: createHAPWExercise
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExerciseRequest' }
+      responses:
+        '201':
+          description: Exercise request created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExerciseEnvelope' }
+        '200':
+          description: Existing result returned for the same requestId
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExerciseEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/hapw/exchanges:
+    get:
+      tags: [HAPW Exchanges]
+      summary: List CLIP to HAPW reserve exchanges
+      operationId: listHAPWExchanges
+      parameters:
+        - $ref: '#/components/parameters/AssetIdQuery'
+      responses:
+        '200':
+          description: Exchange records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeListEnvelope' }
+    post:
+      tags: [HAPW Exchanges]
+      summary: Exchange CLIP for a finite reserve HAPW
+      operationId: createHAPWExchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExchangeRequest' }
+      responses:
+        '201':
+          description: Exchange completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeResultEnvelope' }
+        '200':
+          description: Existing result returned for the same requestId
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangeResultEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/hapw/exchange-policy:
+    get:
+      tags: [HAPW Exchanges]
+      summary: Get daily exchange limit and reserve inventory
+      operationId: getHAPWExchangePolicy
+      responses:
+        '200':
+          description: Current UTC-day policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExchangePolicyEnvelope' }
+
+  /api/v1/platforms:
+    get:
+      tags: [HAPW Exercises]
+      summary: List supported third-party exercise platforms
+      operationId: listPlatforms
+      responses:
+        '200':
+          description: Third-party platforms
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformListEnvelope' }
+
+  /api/v1/session:
+    get:
+      tags: [Account]
+      summary: Get the current integration session capabilities
+      operationId: getSessionPolicy
+      responses:
+        '200':
+          description: Integration session context and enabled capabilities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionEnvelope' }
+
+  /api/v1/clip/treasury:
+    get:
+      tags: [CLIP Treasury]
+      summary: Get fixed supply, platform treasury and conservation state
+      operationId: getCLIPTreasury
+      responses:
+        '200':
+          description: One-time mint and centralized ledger snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CLIPTreasuryEnvelope' }
+
+  /api/v1/clip/distribution-rules:
+    get:
+      tags: [CLIP Treasury]
+      summary: List centralized CLIP distribution rules
+      operationId: listCLIPDistributionRules
+      responses:
+        '200':
+          description: Enabled and disabled distribution rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CLIPDistributionRuleListEnvelope' }
+
+  /api/v1/clip/distributions:
+    get:
+      tags: [CLIP Treasury]
+      summary: List centralized CLIP distribution records
+      operationId: listCLIPDistributions
+      parameters:
+        - name: assetId
+          in: query
+          schema: { type: string }
+        - name: requestId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: CLIP grant ledger
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CLIPDistributionListEnvelope' }
+
+  /api/v1/integrations/asset-requirements:
+    get:
+      tags: [Integrations]
+      summary: Get the required upstream external asset API contract
+      operationId: getExternalAssetRequirements
+      responses:
+        '200':
+          description: Required provider endpoints, fields and normalization policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+
+  /api/v1/integrations/asset-sources:
+    get:
+      tags: [Integrations]
+      summary: List external asset sources and sync state
+      operationId: listExternalAssetSources
+      responses:
+        '200':
+          description: External platform sources
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetSourceListEnvelope' }
+
+  /api/v1/integrations/asset-sources/{sourceCode}:
+    parameters:
+      - name: sourceCode
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Integrations]
+      summary: Get a single external asset source
+      operationId: getExternalAssetSource
+      responses:
+        '200':
+          description: Source status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetSourceEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/integrations/asset-sync-runs:
+    get:
+      tags: [Integrations]
+      summary: List external asset synchronization runs
+      operationId: listExternalAssetSyncRuns
+      responses:
+        '200':
+          description: Synchronization audit records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetSyncRunListEnvelope' }
+
+  /api/generations:
+    post:
+      tags: [Creation]
+      summary: Create an AI video job using a redeemed HAPW
+      operationId: createGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GenerationRequest' }
+      responses:
+        '201':
+          description: Generation created and balances charged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '200': { description: Existing idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/conversions:
+    post:
+      tags: [Creation]
+      summary: Create a regional license and charge the CLIP service fee
+      operationId: createRegionalLicense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConversionRequest' }
+      responses:
+        '201': { description: License request submitted, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '200': { description: Existing idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/profile:
+    get:
+      tags: [Account]
+      summary: Get the current profile and CLIP balance
+      operationId: getProfile
+      responses:
+        '200': { description: Current profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+
+  /api/profile/wallet:
+    post:
+      tags: [Account]
+      summary: Connect a supported wallet provider
+      operationId: connectWallet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider: { type: string, enum: [MetaMask, Coinbase Wallet, WalletConnect, Venly] }
+      responses:
+        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/profile/overseas:
+    post:
+      tags: [Account]
+      summary: Bind a third-party account
+      operationId: bindOverseasAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account]
+              properties:
+                account: { type: string, minLength: 4, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' }
+      responses:
+        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [Account]
+      summary: Unbind the third-party account
+      operationId: unbindOverseasAccount
+      responses:
+        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+
+  /api/profile/settings:
+    patch:
+      tags: [Account]
+      summary: Update account safety settings
+      operationId: updateProfileSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                walletSign: { type: boolean }
+                expiryReminder: { type: boolean }
+      responses:
+        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/overview:
+    get:
+      tags: [Compatibility]
+      summary: Get homepage aggregate data
+      operationId: getOverview
+      responses:
+        '200': { description: Homepage data, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+
+  /api/works:
+    get:
+      tags: [Compatibility]
+      summary: List works
+      operationId: listWorks
+      responses:
+        '200':
+          description: Works
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Work' }
+
+  /api/works/{workId}:
+    parameters:
+      - name: workId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Compatibility]
+      summary: Get work detail
+      operationId: getWork
+      responses:
+        '200': { description: Work, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/assets:
+    get:
+      tags: [Compatibility]
+      summary: Get the current asset dashboard aggregate
+      operationId: getAssetDashboard
+      responses:
+        '200': { description: Dashboard data, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+
+  /api/studio:
+    get:
+      tags: [Compatibility]
+      summary: Get AI studio HAPW, balance and job data
+      operationId: getStudio
+      responses:
+        '200': { description: Studio data, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+
+  /api/hapw/redemptions:
+    post:
+      deprecated: true
+      tags: [Compatibility]
+      summary: Compatibility alias for POST /api/v1/hapw/redemptions
+      operationId: createHAPWRedemptionLegacy
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionRequest' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionResultEnvelope' } } } }
+        '200': { description: Idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/RedemptionResultEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/exercises:
+    post:
+      deprecated: true
+      tags: [Compatibility]
+      summary: Compatibility alias for POST /api/v1/hapw/exercises
+      operationId: createHAPWExerciseLegacy
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseRequest' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseEnvelope' } } } }
+        '200': { description: Idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/transfers:
+    post:
+      deprecated: true
+      tags: [Compatibility]
+      summary: Legacy naming alias; behavior is HAPW exercise
+      operationId: createHAPWTransferAlias
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseRequest' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseEnvelope' } } } }
+        '200': { description: Idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/ExerciseEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/clip/hapw-exchanges:
+    post:
+      deprecated: true
+      tags: [Compatibility]
+      summary: Compatibility alias for POST /api/v1/hapw/exchanges
+      operationId: createHAPWExchangeLegacy
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ExchangeRequest' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/ExchangeResultEnvelope' } } } }
+        '200': { description: Idempotent result, content: { application/json: { schema: { $ref: '#/components/schemas/ExchangeResultEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+components:
+  parameters:
+    AssetId:
+      name: assetId
+      in: path
+      required: true
+      description: Asset ID (`asset-2048`) or token ID (`#2048` or `2048`)
+      schema: { type: string }
+    AssetIdQuery:
+      name: assetId
+      in: query
+      required: false
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: Request failed domain or JSON validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: Daily HAPW exchange limit reached
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    GenericDataEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { type: object, additionalProperties: true }
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    LocalizedText:
+      type: object
+      required: [zh, en]
+      properties:
+        zh: { type: string }
+        en: { type: string }
+        es: { type: string }
+        ja: { type: string }
+        fr: { type: string }
+        ko: { type: string }
+
+    Authorization:
+      type: object
+      required: [holder, scope, territories, usageTypes, exclusivity, commercialUse, derivativeWorks, aiTraining, sublicensable, validFrom]
+      properties:
+        holder: { $ref: '#/components/schemas/LocalizedText' }
+        scope: { $ref: '#/components/schemas/LocalizedText' }
+        territories:
+          type: array
+          items: { type: string }
+        usageTypes:
+          type: array
+          items: { type: string, enum: [ai-video, short-video, digital-display] }
+        exclusivity: { type: string, enum: [exclusive, non-exclusive] }
+        commercialUse: { type: boolean }
+        derivativeWorks: { type: boolean }
+        aiTraining: { type: boolean }
+        sublicensable: { type: boolean }
+        validFrom: { type: string, format: date }
+        validUntil: { type: string, format: date }
+
+    Provenance:
+      type: object
+      required: [issuer, certificateId, network, tokenStandard, verificationStatus, issuedAt]
+      properties:
+        issuer: { type: string }
+        certificateId: { type: string }
+        network: { type: string }
+        tokenStandard: { type: string }
+        contractAddress: { type: string }
+        metadataUri: { type: string, format: uri }
+        verificationStatus:
+          type: string
+          description: Verification state reported by the source platform or Clipli policy
+        issuedAt: { type: string, format: date }
+
+    AssetMedia:
+      type: object
+      required: [linkedWorkIds, format]
+      properties:
+        linkedWorkIds:
+          type: array
+          items: { type: string }
+        format: { type: string }
+        previewUrl: { type: string, format: uri }
+
+    ExternalAssetRef:
+      type: object
+      required: [providerCode, providerAssetId, syncStatus, lastSyncedAt]
+      properties:
+        providerCode: { type: string }
+        providerAssetId: { type: string }
+        assetUrl: { type: string, format: uri }
+        syncStatus: { type: string, enum: [synced, stale, failed] }
+        lastSyncedAt: { type: string, format: date-time }
+        dataVersion: { type: string }
+
+    HAPWAsset:
+      type: object
+      required: [id, kind, tokenId, name, nameEn, value, currency, status, statusEn, transferable, owner, rightsHolder, rightsHolderEn, authorizationScope, authorizationScopeEn, creditYield, clipPrice, exchangeAvailable, redemptionStatus, authorization, provenance, media, external]
+      properties:
+        id: { type: string, examples: [asset-2048] }
+        kind: { type: string, const: HAPW }
+        tokenId: { type: string, examples: ['#2048'] }
+        name: { type: string }
+        nameEn: { type: string }
+        nameKo: { type: string }
+        value: { type: integer, minimum: 0 }
+        currency: { type: string, examples: [CNY] }
+        status: { type: string }
+        statusEn: { type: string }
+        statusKo: { type: string }
+        transferable: { type: boolean, description: Eligible for HAPW exercise }
+        owner: { type: string }
+        rightsHolder: { type: string }
+        rightsHolderEn: { type: string }
+        rightsHolderKo: { type: string }
+        authorizationScope: { type: string }
+        authorizationScopeEn: { type: string }
+        authorizationScopeKo: { type: string }
+        creditYield: { type: integer, minimum: 0 }
+        clipPrice: { type: integer, minimum: 0 }
+        exchangeAvailable: { type: boolean }
+        redemptionStatus: { type: string, enum: [available, redeemed, restricted] }
+        authorization: { $ref: '#/components/schemas/Authorization' }
+        provenance: { $ref: '#/components/schemas/Provenance' }
+        media: { $ref: '#/components/schemas/AssetMedia' }
+        external: { $ref: '#/components/schemas/ExternalAssetRef' }
+
+    SessionPolicy:
+      type: object
+      required: [mode, userRef, identityVerification, kycRequired, walletOptional, persistence, notice]
+      properties:
+        mode: { type: string, description: Session mode configured for this deployment }
+        userRef: { type: string }
+        identityVerification: { type: boolean, description: Whether identity verification is enabled for this deployment }
+        kycRequired: { type: boolean, description: Whether the deployment requires KYC for the requested operation }
+        walletOptional: { type: boolean, description: Whether a wallet is optional for the requested operation }
+        persistence: { type: string }
+        notice: { type: string }
+
+    SessionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/SessionPolicy' }
+
+    CLIPTreasury:
+      type: object
+      required: [symbol, mintMode, mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, totalDistributed, totalReclaimed, platformWallet, contractAddress, network, distributionMode, mintStatus, mintedAt]
+      properties:
+        symbol: { type: string, const: CLIP }
+        mintMode: { type: string, const: one-time-fixed-supply }
+        mintedSupply: { type: integer, minimum: 0 }
+        treasuryBalance: { type: integer, minimum: 0 }
+        liquidityAllocation: { type: integer, minimum: 0 }
+        ledgerOutstanding: { type: integer, minimum: 0 }
+        totalDistributed: { type: integer, minimum: 0 }
+        totalReclaimed: { type: integer, minimum: 0 }
+        platformWallet: { type: string }
+        contractAddress: { type: string }
+        network: { type: string }
+        distributionMode: { type: string, const: centralized-ledger }
+        mintStatus: { type: string }
+        mintedAt: { type: string, format: date-time }
+
+    CLIPDistributionRule:
+      type: object
+      required: [code, trigger, formula, rate, description, enabled]
+      properties:
+        code: { type: string }
+        trigger: { type: string }
+        formula: { type: string }
+        rate: { type: number }
+        description: { type: string }
+        enabled: { type: boolean }
+
+    CLIPDistribution:
+      type: object
+      required: [id, requestId, ruleCode, userRef, assetId, amount, userBalanceBefore, userBalanceAfter, treasuryBefore, treasuryAfter, status, createdAt]
+      properties:
+        id: { type: string }
+        requestId: { type: string }
+        ruleCode: { type: string }
+        userRef: { type: string }
+        assetId: { type: string }
+        amount: { type: integer, minimum: 0 }
+        userBalanceBefore: { type: integer, minimum: 0 }
+        userBalanceAfter: { type: integer, minimum: 0 }
+        treasuryBefore: { type: integer, minimum: 0 }
+        treasuryAfter: { type: integer, minimum: 0 }
+        status: { type: string, enum: [completed, rejected] }
+        createdAt: { type: string }
+
+    CLIPTreasuryEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [treasury, accountBalance, distributionRules, ledgerConservation]
+          properties:
+            treasury: { $ref: '#/components/schemas/CLIPTreasury' }
+            accountBalance: { type: integer }
+            distributionRules:
+              type: array
+              items: { $ref: '#/components/schemas/CLIPDistributionRule' }
+            ledgerConservation:
+              type: object
+              required: [mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, conserved]
+              properties:
+                mintedSupply: { type: integer }
+                treasuryBalance: { type: integer }
+                liquidityAllocation: { type: integer }
+                ledgerOutstanding: { type: integer }
+                conserved: { type: boolean }
+
+    CLIPDistributionRuleListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CLIPDistributionRule' }
+            totalItems: { type: integer }
+
+    CLIPDistributionListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/CLIPDistribution' }
+            totalItems: { type: integer }
+
+    AssetSource:
+      type: object
+      required: [code, name, baseUrl, mode, status, syncIntervalSeconds, assetCount]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        baseUrl: { type: string, format: uri }
+        mode: { type: string }
+        status: { type: string, enum: [synced, stale, failed] }
+        syncIntervalSeconds: { type: integer, minimum: 1 }
+        lastSyncedAt: { type: string, format: date-time }
+        lastError: { type: string }
+        assetCount: { type: integer, minimum: 0 }
+
+    AssetSourceEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AssetSource' }
+
+    AssetSourceListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems, sourceOfTruth]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AssetSource' }
+            totalItems: { type: integer }
+            sourceOfTruth: { type: string, const: external-platform }
+
+    AssetSyncRun:
+      type: object
+      required: [id, sourceCode, status, startedAt, recordsRead, recordsValid, recordsSaved]
+      properties:
+        id: { type: string }
+        sourceCode: { type: string }
+        status: { type: string, enum: [completed, failed] }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        recordsRead: { type: integer, minimum: 0 }
+        recordsValid: { type: integer, minimum: 0 }
+        recordsSaved: { type: integer, minimum: 0 }
+        error: { type: string }
+
+    AssetSyncRunListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AssetSyncRun' }
+            totalItems: { type: integer }
+
+    Work:
+      type: object
+      required: [id, title, titleEn, category, categoryEn, duration, views, creator, creatorEn, summary, summaryEn, description, descriptionEn, format, formatEn, linkedAssetId, source]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        titleEn: { type: string }
+        titleKo: { type: string }
+        category: { type: string }
+        categoryEn: { type: string }
+        duration: { type: string }
+        views: { type: integer }
+        creator: { type: string }
+        creatorEn: { type: string }
+        summary: { type: string }
+        summaryEn: { type: string }
+        description: { type: string }
+        descriptionEn: { type: string }
+        format: { type: string }
+        formatEn: { type: string }
+        linkedAssetId: { type: string }
+        haiwenUrl: { type: string, format: uri }
+        accent: { type: string }
+        source: { type: string }
+
+    Pagination:
+      type: object
+      required: [page, pageSize, totalItems, totalPages]
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalItems: { type: integer }
+        totalPages: { type: integer }
+
+    HAPWAssetListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, pagination]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/HAPWAsset' }
+            pagination: { $ref: '#/components/schemas/Pagination' }
+
+    HAPWAssetDetailEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [asset, relatedWorks, availableActions]
+          properties:
+            asset: { $ref: '#/components/schemas/HAPWAsset' }
+            relatedWorks:
+              type: array
+              items: { $ref: '#/components/schemas/Work' }
+            availableActions:
+              type: object
+              required: [redeem, exercise, exchange, generate]
+              properties:
+                redeem: { type: boolean }
+                exercise: { type: boolean }
+                exchange: { type: boolean }
+                generate: { type: boolean }
+
+    HAPWSummaryEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [totalAssets, redeemableAssets, redeemedAssets, restrictedAssets, exerciseEligible, exchangeAvailable, totalValue, potentialCredits]
+          properties:
+            totalAssets: { type: integer }
+            redeemableAssets: { type: integer }
+            redeemedAssets: { type: integer }
+            restrictedAssets: { type: integer }
+            exerciseEligible: { type: integer }
+            exchangeAvailable: { type: integer }
+            totalValue: { type: integer }
+            potentialCredits: { type: integer }
+
+    AssetEvent:
+      type: object
+      required: [id, assetId, type, status, createdAt]
+      properties:
+        id: { type: string }
+        assetId: { type: string }
+        type: { type: string, enum: [issued, redemption, generation, exercise, exchange] }
+        status: { type: string }
+        createdAt: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    AssetEventListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AssetEvent' }
+            totalItems: { type: integer }
+
+    WorkListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Work' }
+            totalItems: { type: integer }
+
+    RedemptionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, assetId, accepted]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        assetId: { type: string }
+        accepted: { type: boolean, const: true }
+
+    HAPWRedemption:
+      type: object
+      required: [id, assetId, receipt, creditsGranted, creditsRemaining, clipGranted, requestId, status, statusEn, createdAt]
+      properties:
+        id: { type: string }
+        assetId: { type: string }
+        receipt: { type: string }
+        creditsGranted: { type: integer }
+        creditsRemaining: { type: integer }
+        clipGranted: { type: integer }
+        requestId: { type: string }
+        status: { type: string }
+        statusEn: { type: string }
+        statusKo: { type: string }
+        createdAt: { type: string }
+
+    GenerationAccount:
+      type: object
+      required: [balance, lifetimeGranted, lifetimeUsed, standardFactor, proFactor, clipGrantPerCredit, clipCostPerCredit, lifetimeClipGranted, lifetimeClipSpent]
+      properties:
+        balance: { type: integer }
+        lifetimeGranted: { type: integer }
+        lifetimeUsed: { type: integer }
+        standardFactor: { type: number }
+        proFactor: { type: number }
+        clipGrantPerCredit: { type: number }
+        clipCostPerCredit: { type: number }
+        lifetimeClipGranted: { type: integer }
+        lifetimeClipSpent: { type: integer }
+
+    RedemptionResultEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [redemption, generationAccount, clipBalance]
+          properties:
+            redemption: { $ref: '#/components/schemas/HAPWRedemption' }
+            generationAccount: { $ref: '#/components/schemas/GenerationAccount' }
+            clipBalance: { type: integer }
+
+    RedemptionListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/HAPWRedemption' }
+            totalItems: { type: integer }
+
+    ExerciseRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, assetId, platformCode, accepted]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        assetId: { type: string }
+        platformCode: { type: string, enum: [haiwen, opensea, foundation, superrare, artblocks] }
+        accepted: { type: boolean, const: true }
+
+    AssetExercise:
+      type: object
+      required: [id, requestId, assetId, platformCode, direction, directionEn, value, statusCode, status, statusEn, createdAt]
+      properties:
+        id: { type: string }
+        requestId: { type: string }
+        assetId: { type: string }
+        platformCode: { type: string }
+        direction: { type: string }
+        directionEn: { type: string }
+        directionKo: { type: string }
+        value: { type: integer }
+        statusCode: { type: string }
+        status: { type: string }
+        statusEn: { type: string }
+        statusKo: { type: string }
+        createdAt: { type: string }
+
+    ExerciseEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AssetExercise' }
+
+    ExerciseListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AssetExercise' }
+            totalItems: { type: integer }
+
+    ExchangeRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, assetId, accepted]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        assetId: { type: string }
+        accepted: { type: boolean, const: true }
+
+    ExchangeQuote:
+      type: object
+      required: [price, fee, total, feeRate]
+      properties:
+        price: { type: integer, minimum: 1 }
+        fee: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 1 }
+        feeRate: { type: number, const: 0.05 }
+
+    ExchangeQuoteEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [assetId, tokenId, quoteAsset, quote, expiresInSeconds, isIndicative]
+          properties:
+            assetId: { type: string }
+            tokenId: { type: string }
+            quoteAsset: { type: string, const: CLIP }
+            quote: { $ref: '#/components/schemas/ExchangeQuote' }
+            expiresInSeconds: { type: integer, const: 60 }
+            isIndicative: { type: boolean, const: true }
+
+    HAPWExchange:
+      type: object
+      required: [id, requestId, assetId, price, fee, total, feeRate, statusCode, status, statusEn, createdAt]
+      properties:
+        id: { type: string }
+        requestId: { type: string }
+        assetId: { type: string }
+        price: { type: integer }
+        fee: { type: integer }
+        total: { type: integer }
+        feeRate: { type: number }
+        statusCode: { type: string }
+        status: { type: string }
+        statusEn: { type: string }
+        statusKo: { type: string }
+        createdAt: { type: string }
+
+    ExchangeResultEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [exchange, clipBalance]
+          properties:
+            exchange: { $ref: '#/components/schemas/HAPWExchange' }
+            asset: { $ref: '#/components/schemas/HAPWAsset' }
+            clipBalance: { type: integer }
+
+    ExchangeListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/HAPWExchange' }
+            totalItems: { type: integer }
+
+    ExchangePolicy:
+      type: object
+      required: [date, timezone, resetsAt, dailyLimit, usedToday, remainingToday, reached, inventoryTotal, inventoryAvailable]
+      properties:
+        date: { type: string, format: date }
+        timezone: { type: string, const: UTC }
+        resetsAt: { type: string, format: date-time }
+        dailyLimit: { type: integer, const: 2 }
+        usedToday: { type: integer }
+        remainingToday: { type: integer }
+        reached: { type: boolean }
+        inventoryTotal: { type: integer }
+        inventoryAvailable: { type: integer }
+
+    ExchangePolicyEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ExchangePolicy' }
+
+    ExternalPlatform:
+      type: object
+      required: [code, name, url]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        url: { type: string, format: uri }
+
+    PlatformListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ExternalPlatform' }
+            totalItems: { type: integer }
+
+    GenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, assetId, duration, quality, accepted]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        assetId: { type: string }
+        duration: { type: integer, enum: [15, 30, 60] }
+        quality: { type: string, enum: [standard, pro] }
+        accepted: { type: boolean, const: true }
+
+    ConversionRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, assetId, region, days, accepted]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        assetId: { type: string }
+        region: { type: string }
+        days: { type: integer, enum: [30, 90, 180] }
+        accepted: { type: boolean, const: true }

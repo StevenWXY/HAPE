@@ -6,7 +6,7 @@ Clipli 是版权素材驱动的 AI 视频创作与资产行权平台。名称取
 
 版权持有方把素材包、改编范围和使用边界授权为 HAPW。用户持有并核销对应 HAPW 后，才可以使用素材；核销会同时发放创作额度与 CLIP，生成视频则同时消耗两者。
 
-当前版本是可操作原型，使用演示资产、模拟视频任务、模拟 DEX 池和内存状态，不处理真实私钥、支付、代币合约或链上签名。作品来源通过适配器隔离，后续可接入第三方作品 API。
+当前版本是可操作原型，使用外部平台快照、模拟视频任务、模拟 DEX 池和内存状态，不处理真实私钥、支付或链上签名。资产与作品来源通过只读适配器隔离，后续可替换为各平台正式 API。
 
 ## 2. 专有名词
 
@@ -15,7 +15,7 @@ Clipli 是版权素材驱动的 AI 视频创作与资产行权平台。名称取
 | Clipli | 平台名称，取意 Create、Click、Grow | 保存授权、核销、生成、费用与行权记录，不替代权利判断 |
 | HAPW | 面向不同 IP 的授权证书资产 | 由版权方授权，对应具体素材包和使用范围；持有并核销后才能使用素材，不等于底层版权 |
 | 创作额度 | 与 HAPW 授权绑定的计算额度 | 核销时发放，按视频时长和质量消耗，不能脱离授权单独流转 |
-| CLIP | Clipli 的创作服务积分（代币） | 不设固定总量；核销 HAPW 时按规则发放，也可通过 DEX 获取；用于生成服务和有限储备兑换，不代表版权或收益权 |
+| CLIP | Clipli 的创作服务积分（代币） | 一次性铸造固定总量并存放于平台金库；按中心化规则分发，也可由外部 DEX 兑换取得；用于生成服务和有限储备兑换，不代表版权或收益权 |
 | HAPW 核销 | 在 Clipli 内开启绑定素材的生成许可 | 不可逆；产生授权凭证、创作额度和 CLIP，并关闭同一资产的行权路径 |
 | 资产行权 | 保留 HAPW 未核销状态并创建第三方平台签名请求 | 不产生创作额度或 CLIP，也不等同于底层版权转让或第三方平台接纳 |
 | 第三方平台 | Clipli 外部的展示、发行或交易平台 | 当前入口包括海文发、OpenSea、Foundation、SuperRare、Art Blocks |
@@ -75,6 +75,8 @@ Clipli 是版权素材驱动的 AI 视频创作与资产行权平台。名称取
 - 核销后同步产生唯一授权凭证、额度余额、CLIP 流水；资产不可再次核销或行权。
 - 生成支持 15/30/60 秒和标准 720p、高质量 1080p；前后端使用相同公式同步扣除额度与 CLIP。
 - 内容表现是生成任务的附属记录，不进入授权、额度或 CLIP 的计算公式。
+- CLIP 采用“一次性铸造 + 平台钱包托管 + 中心化分发”模型。演示总量为 `10,000,000 CLIP`，其中 `250,000 CLIP` 标记为 DEX 流动性配置，其余由平台金库和内部账本共同记录。
+- 本版不做真实身份验证或 KYC。`anonymous-demo` 是进程内用户引用；钱包连接是可选的操作句柄，不构成身份认证。
 - CLIP 资产卡显示余额、参考汇率、CLIP/USDT 双边储备和名义流动性。
 - CLIP→HAPW 储备兑换显示本金、5% 手续费、总消耗、每日 2 枚上限和一次性领取状态。
 - 资产行权支持海文发、OpenSea、Foundation、SuperRare、Art Blocks；提交记录目标平台和签名状态。
@@ -97,6 +99,11 @@ HAPWRedemption     { id, requestId, assetId, receipt, creditsGranted, creditsRem
 GenerationAccount  { balance, lifetimeGranted, lifetimeUsed, clipGrantPerCredit, clipCostPerCredit, lifetimeClipGranted, lifetimeClipSpent }
 AIVideoGeneration  { id, requestId, assetId, title*, duration, quality, creditsUsed, clipCost, validViews, status, createdAt }
 CLIPAccount        { balance, quoteAsset, dexUrl, dexPool, hapwExchangeFeeRate }
+CLIPTreasury       { mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, platformWallet, mintMode, distributionMode }
+CLIPDistribution   { requestId, ruleCode, userRef, assetId, amount, before/after balances, createdAt }
+AssetSource        { code, baseUrl, mode, status, lastSyncedAt, assetCount }
+AssetSyncRun       { sourceCode, status, recordsRead, recordsValid, recordsSaved, startedAt, completedAt }
+SessionPolicy      { mode, userRef, identityVerification, kycRequired, walletOptional, persistence }
 CLIPTransaction    { id, typeCode, amount, counterparty*, statusCode, txHash, createdAt }
 HAPWExchange       { id, requestId, assetId, price, fee, total, feeRate, statusCode, createdAt }
 HAPWExchangePolicy { date, timezone, resetsAt, dailyLimit, usedToday, remainingToday, inventoryTotal, inventoryAvailable, reached }
@@ -108,15 +115,42 @@ ExternalPlatform   { code, name, url }
 
 ## 8. API 契约
 
-### 读取
+完整且可执行的接口规范以 `api/openapi.yaml` 为准，中文说明见 `docs/API.md`。新增客户端统一使用 `/api/v1/hapw/*`；现有网页暂时保留 `/api/*` 兼容路由，两者必须调用同一 Go 服务层。
+
+### HAPW v1 读取接口
+
+- `GET /api/v1/hapw/summary`：资产总量、状态、可行权数、库存、总估值与潜在额度。
+- `GET /api/v1/hapw/assets`：按名称、Token、权利方、状态、可核销和可兑换条件搜索、筛选、排序与分页。
+- `GET /api/v1/hapw/assets/:id`：完整 HAPW、关联作品与当前可执行动作。
+- `GET /api/v1/hapw/assets/:id/authorization`：权利方、范围、地域、用途、期限和证书来源。
+- `GET /api/v1/hapw/assets/:id/history`：发行、核销、生成、行权和兑换时间线。
+- `GET /api/v1/hapw/assets/:id/works`：关联作品。
+- `GET /api/v1/hapw/assets/:id/exchange-quote`：CLIP 本金、5% 手续费与总额试算。
+- `GET /api/v1/hapw/redemptions`、`GET /api/v1/hapw/redemptions/:id`：核销列表与凭证详情。
+- `GET /api/v1/hapw/exercises`、`GET /api/v1/hapw/exchanges`：行权与储备兑换记录。
+- `GET /api/v1/hapw/exchange-policy`：每日上限、重置时间与库存。
+- `GET /api/v1/platforms`：第三方平台。
+- `GET /api/v1/session`：匿名演示会话策略，明确不做身份验证、KYC，钱包可选。
+- `GET /api/v1/clip/treasury`：一次性铸造总量、平台钱包余额、DEX 流动性配置、内部账本余额和守恒校验。
+- `GET /api/v1/clip/distribution-rules`：中心化 CLIP 分发规则；本版只启用 HAPW 核销规则。
+- `GET /api/v1/clip/distributions`：CLIP 分发流水，可按 `assetId` 或 `requestId` 筛选。
+- `GET /api/v1/integrations/asset-requirements`：外部平台必须提供的资产、授权、媒体、事件、关联作品和可选 Webhook 接口清单。
+- `GET /api/v1/integrations/asset-sources`、`GET /api/v1/integrations/asset-sources/:code`：外部资产源状态与最近同步时间。
+- `GET /api/v1/integrations/asset-sync-runs`：同步批次、读取/校验/保存条数与失败原因。
+
+### HAPW v1 写入接口
+
+- `POST /api/v1/hapw/redemptions`：`{ requestId, assetId, accepted }`，核销并同步发放额度与 CLIP。
+- `POST /api/v1/hapw/exercises`：`{ requestId, assetId, platformCode, accepted }`，创建行权签名请求。
+- `POST /api/v1/hapw/exchanges`：`{ requestId, assetId, accepted }`，支付价格和 5% 手续费领取有限储备 HAPW。
+
+### 网页兼容接口
 
 - `GET /api/overview`：首页统计与闭环概览。
 - `GET /api/works`、`GET /api/works/:id`：作品列表与详情。
 - `GET /api/assets`：HAPW、行权记录、第三方平台、CLIP、DEX 池、生成和储备兑换；`clip.hapwExchangePolicy` 返回当日限额与可用库存快照。
 - `GET /api/studio`：素材、凭证、额度、CLIP 和生成记录。
 - `GET /api/profile`：钱包、外部账号和安全设置。
-
-### 写入
 
 - `POST /api/hapw/redemptions`：`{ requestId, assetId, accepted }`，核销并同步发放额度与 CLIP。
 - `POST /api/generations`：`{ requestId, assetId, duration, quality, accepted }`，同步扣除额度与 CLIP。
@@ -131,8 +165,15 @@ ExternalPlatform   { code, name, url }
 ## 9. 架构约束
 
 - 前端无构建依赖：`public/index.html`、`public/styles.css`、`public/locales.js`、`public/brand-locales.js`、`public/app.js`。品牌文案层最后加载，用于统一六种语言的当前产品口径。
-- 服务端使用 Node.js 内置 `http`；机制公式集中在 `server/mechanism.js` 并由单元测试覆盖。
-- 作品来源经 `server/work-source.js` 和 `server/adapters/works/` 归一化，前端不直接信任第三方字段或 URL。
+- 服务端使用 Go 1.22+ 标准库 `net/http`，不依赖第三方 Web 框架；入口在 `cmd/server`，业务规则在 `internal/service`，领域模型在 `internal/domain`。
+- `internal/store` 当前提供带读写锁的内存仓储；正式环境通过相同业务边界替换为 PostgreSQL，不允许把 SQL 或链上调用写入 HTTP handler。
+- 作品默认来自 `internal/store` 的外部快照；设置 `WORK_SOURCE_URL` 后由 `internal/works` 以 5 秒超时读取第三方 JSON，并在失败、空结果或字段不完整时保留最近快照，前端不直接信任第三方字段或 URL。
+- HAPW 默认来自各外部平台的规范化快照；设置 `HAPW_ASSET_SOURCE_URL` 后由 `internal/assets` 以 5 秒超时读取第三方 JSON。每枚资产必须带 `external.providerCode`、`providerAssetId`、`syncStatus` 和 `lastSyncedAt`。
+- 外部资产源只读，不向平台回写。平台需要的上游接口、字段和签名要求由 `/api/v1/integrations/asset-requirements` 固化；同步失败保留最后一次有效快照并记录 `AssetSyncRun`。
+- HAPW 对外同时提供前端兼容的扁平字段和结构化 `authorization`、`provenance`、`media`、`external` 字段；新消费者优先使用结构化字段。
+- CLIP 的铸币动作不暴露为 API。服务层仅在成功核销时从平台金库按 `floor(creditYield × 0.40)` 分发；生成、授权和 HAPW 兑换费用回到金库，所有变化写入内部账本。
+- 所有写操作在服务层锁内完成校验和状态修改，禁止部分扣款；核销、生成、兑换、区域授权与行权由 `requestId` 保证幂等。
+- 完整 API 修改必须同步更新 `api/openapi.yaml`、`docs/API.md` 和 HTTP 契约测试。
 - HAPW、授权凭证、创作额度、CLIP、生成任务、资产行权必须为独立实体，以标识互相引用。
 - 外部链接只允许 `http:` 与 `https:`，服务端静态响应保留 CSP、禁止嵌入和内容类型保护头。
 
@@ -156,7 +197,7 @@ ExternalPlatform   { code, name, url }
 8. 资产行权只接受已配置平台与可操作 HAPW，记录目标平台并等待签名。
 9. 关于页 8 项 Q&A 在六种语言下完整可用。
 10. 390px 移动端无横向溢出，暗色和亮色模式均具备足够对比度。
-11. `npm test` 覆盖额度公式、CLIP 发放、生成费用、5% 报价、DEX 池和作品适配器。
+11. `npm test`（内部执行 `go test ./...`）覆盖额度公式、CLIP 发放、生成费用、5% 报价、每日上限、HAPW 查询和 HTTP 契约。
 
 ## 12. 后续扩展
 
