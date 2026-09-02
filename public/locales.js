@@ -764,6 +764,11 @@ Object.assign(window.CLIPLI_LOCALES.ko, {
   faqTitle: "자주 묻는 질문", faqLead: "소재 권리, 크레딧과 CLIP, 교환, 외부 플랫폼의 핵심 내용입니다.", faq1Q: "HAPW는 무엇을 뜻하나요?", faq1A: "권리자가 허가한 소재와 범위에 연결된 핵심 자산이며 사용 전 보유와 상각이 필요합니다.", faq2Q: "상각하면 무엇을 받나요?", faq2A: "표시된 창작 크레딧과 크레딧당 0.40 CLIP를 함께 받습니다.", faq3Q: "생성은 무엇을 사용하나요?", faq3A: "길이와 품질로 계산한 크레딧과 그 20%의 CLIP를 함께 사용합니다.", faq4Q: "재생으로 CLIP를 받나요?", faq4A: "아니요. 재생은 성과 분석일 뿐 수익을 보장하지 않습니다.", faq5Q: "CLIP를 HAPW로 어떻게 바꾸나요?", faq5A: "미수령 준비금에 공개 가격과 5% 수수료를 지불합니다.", faq6Q: "DEX 환율은 실시간인가요?", faq6A: "데모 스냅샷이며 실제 거래는 지갑의 최신 견적을 따릅니다.", faq7Q: "어떤 플랫폼으로 권리 행사할 수 있나요?", faq7A: "HAIWEN, OpenSea, Foundation, SuperRare, Art Blocks이며 각자 규칙이 있습니다.", faq8Q: "Clipli가 계약이나 자산 보관을 대신하나요?", faq8A: "아니요. 키를 보관하거나 계약, 온체인 확인, 외부 심사를 대신하지 않습니다."
 });
 
+Object.assign(window.CLIPLI_LOCALES.es, { dexNote: "Se abrirá PancakeSwap en BNB Chain. Comprueba red y contrato en tu cartera." });
+Object.assign(window.CLIPLI_LOCALES.ja, { dexNote: "BNB Chain の PancakeSwap を開きます。ネットワークとコントラクトを確認してください。" });
+Object.assign(window.CLIPLI_LOCALES.fr, { dexNote: "PancakeSwap sur BNB Chain va s'ouvrir. Vérifiez le réseau et le contrat dans votre portefeuille." });
+Object.assign(window.CLIPLI_LOCALES.ko, { dexNote: "BNB Chain의 PancakeSwap 교환 페이지가 열립니다. 지갑에서 네트워크와 토큰 정보를 확인하세요." });
+
 // Clipli brand system: final public copy shared by all product surfaces.
 Object.assign(window.CLIPLI_LOCALES.zh, {
   footer: "Clipli 演示环境 · Create, click, grow · 不构成投资或交易建议",

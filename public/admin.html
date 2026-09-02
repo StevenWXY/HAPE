@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Clipli · Operations</title>
+  <link rel="stylesheet" href="/admin.css?v=2">
+</head>
+<body>
+  <header class="admin-nav">
+    <a class="admin-brand" href="/" aria-label="Clipli home"><span class="brand-mark">C</span><span>Clipli <small>OPERATIONS</small></span></a>
+    <div class="nav-actions">
+      <button class="ghost-button" id="language-toggle" type="button">EN</button>
+      <button class="ghost-button" id="clear-session" type="button" data-copy="clearSession">清除会话</button>
+    </div>
+  </header>
+
+  <main class="admin-main">
+    <section class="admin-hero">
+      <div>
+        <p class="kicker" data-copy="eyebrow">CLIPLI OPERATIONS</p>
+        <h1 data-copy="title">空投运营后台</h1>
+        <p class="hero-lead" data-copy="lead">管理指定钱包和规则账户的 CLIP 空投任务。实际链上转账由外部执行器完成。</p>
+      </div>
+      <div class="status-box" id="connection-state"><span class="status-dot"></span><span data-copy="notConnected">未连接运营接口</span></div>
+    </section>
+
+    <section class="admin-panel auth-panel" id="auth-panel">
+      <div class="panel-heading">
+        <div><p class="kicker" data-copy="authEyebrow">ACCESS</p><h2 data-copy="authTitle">连接运营接口</h2><p data-copy="authLead">密钥只保存在当前浏览器会话中，不会写入 URL。</p></div>
+      </div>
+      <form id="auth-form" class="auth-form">
+        <label><span data-copy="adminKey">管理员密钥</span><input id="admin-key" type="password" autocomplete="off" placeholder="X-Clipli-Admin-Key"></label>
+        <label><span data-copy="executorKey">执行器回调密钥（可选）</span><input id="executor-key" type="password" autocomplete="off" placeholder="X-Clipli-Executor-Key"></label>
+        <button class="primary-button" type="submit" data-copy="connect">连接</button>
+      </form>
+      <p class="inline-feedback" id="auth-feedback" role="status"></p>
+    </section>
+
+    <div id="dashboard" hidden>
+      <section class="stat-grid" id="stats" aria-live="polite"></section>
+
+      <div class="admin-layout">
+        <div class="main-column">
+          <section class="admin-panel">
+            <div class="panel-heading split-heading"><div><p class="kicker" data-copy="createEyebrow">AIRDROP CONTROL</p><h2 data-copy="createTitle">创建空投任务</h2><p data-copy="createLead">可以按已满足的规则创建，也可以向指定钱包发放 CLIP。</p></div><span class="security-label" data-copy="protected">受保护接口</span></div>
+            <form id="airdrop-form" class="form-grid">
+              <label><span data-copy="rule">空投规则</span><select id="rule-code" required></select></label>
+              <label><span data-copy="wallet">目标钱包地址</span><input id="wallet-address" required spellcheck="false" placeholder="0x…"></label>
+              <label><span data-copy="chain">BNB 网络</span><select id="chain-id" required><option value="0x61">BNB Smart Chain Testnet · tBNB · 模拟</option><option value="0x38">BNB Smart Chain Mainnet · BNB · 模拟</option></select></label>
+              <label id="asset-field"><span data-copy="asset">关联 HAPW（规则空投需要）</span><select id="asset-id"><option value="">加载中…</option></select></label>
+              <label id="amount-field"><span data-copy="amount">空投数量（CLIP）</span><input id="amount" type="number" min="1" step="1" placeholder="25"></label>
+              <label><span data-copy="requestId">请求编号</span><input id="request-id" required spellcheck="false"></label>
+              <div class="form-actions"><button class="secondary-button" id="check-eligibility" type="button" data-copy="check">检查资格</button><button class="primary-button" type="submit" data-copy="queue">创建任务</button></div>
+            </form>
+            <div class="eligibility-box" id="eligibility" hidden></div>
+            <p class="inline-feedback" id="create-feedback" role="status"></p>
+          </section>
+
+          <section class="admin-panel">
+            <div class="panel-heading split-heading"><div><p class="kicker" data-copy="queueEyebrow">EXECUTION QUEUE</p><h2 data-copy="queueTitle">空投任务队列</h2><p data-copy="queueLead">查看已创建任务和外部执行器回写的交易状态。</p></div><button class="secondary-button" id="refresh-queue" type="button" data-copy="refresh">刷新</button></div>
+            <div class="queue-filters"><label><span data-copy="statusFilter">状态</span><select id="status-filter"><option value="" data-copy="allStatuses">全部</option><option value="queued">queued</option><option value="submitted">submitted</option><option value="confirmed">confirmed</option><option value="failed">failed</option></select></label><label><span data-copy="walletFilter">钱包筛选</span><input id="wallet-filter" spellcheck="false" placeholder="0x…"></label><button class="secondary-button" id="filter-queue" type="button" data-copy="filter">筛选</button></div>
+            <div class="table-wrap"><table><thead><tr><th data-copy="tableWallet">钱包</th><th data-copy="tableRule">规则</th><th data-copy="tableAmount">数量</th><th data-copy="tableStatus">状态</th><th data-copy="tableCreated">创建时间</th><th data-copy="tableTx">回执</th><th data-copy="tableAction">操作</th></tr></thead><tbody id="queue-body"><tr><td colspan="7" class="table-empty" data-copy="emptyQueue">暂无空投任务</td></tr></tbody></table></div>
+          </section>
+        </div>
+
+        <aside class="side-column">
+          <section class="admin-panel compact-panel"><div class="panel-heading"><p class="kicker" data-copy="rulesEyebrow">RULES</p><h2 data-copy="rulesTitle">当前规则</h2></div><div id="rules-list" class="rules-list"></div></section>
+          <section class="admin-panel compact-panel"><div class="panel-heading"><p class="kicker" data-copy="executorEyebrow">EXECUTOR</p><h2 data-copy="executorTitle">写入执行结果</h2><p data-copy="executorLead">仅在外部执行器完成广播后回写，不代表后台直接持有私钥。</p></div><form id="result-form" class="form-grid"><label><span data-copy="airdropId">空投 ID</span><input id="result-id" required spellcheck="false" placeholder="airdrop-…"></label><label><span data-copy="resultStatus">结果状态</span><select id="result-status"><option value="submitted">submitted</option><option value="confirmed">confirmed</option><option value="failed">failed</option></select></label><label><span data-copy="txHash">交易哈希</span><input id="tx-hash" spellcheck="false" placeholder="0x…"></label><label><span data-copy="failureReason">失败原因</span><input id="failure-reason"></label><button class="primary-button" type="submit" data-copy="writeResult">写入结果</button></form><p class="inline-feedback" id="result-feedback" role="status"></p></section>
+        </aside>
+      </div>
+    </div>
+  </main>
+  <script src="/admin.js?v=2" defer></script>
+</body>
+</html>

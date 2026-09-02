@@ -24,7 +24,7 @@ const translations = {
     worksEyebrow: "Clipli Screening", worksTitle: "作品展示", worksLead: "以 HAPW 资产为线索，浏览来自 Clipli 的短视频与短剧。",
     all: "全部", featured: "精选", play: "播放", views: "播放", close: "关闭", seedSource: "演示素材", details: "查看详情", detailEyebrow: "Work record", detailLead: "查看作品简介、关联 HAPW、发行状态与国内平台入口。", linkedHapw: "关联 HAPW", format: "作品形式", domesticRelease: "国内发行", haiwenPlatform: "海文发平台", openHaiwen: "打开海文发", backWorks: "返回作品",
     assetsEyebrow: "Asset console", assetsTitle: "资产仪表盘", assetsLead: "把 HAPW 作品资产与 CLIP 平台积分放在同一张可核对的账本中。",
-    hapwHoldings: "HAPW 资产持仓", hapwLead: "代表 Clipli 平台上的作品与版权权益。", clipBalance: "CLIP 余额", clipLead: "由平台金库按规则分发的服务积分，可通过外部 DEX 兑换，但不代表作品所有权。", clipSupply: "供应策略", clipBuy: "获取方式", dexButton: "前往 DEX 兑换", dexNote: "将打开外部 Uniswap 兑换页面；请在钱包确认网络与代币信息。", mechanismDetails: "机制细节",
+    hapwHoldings: "HAPW 资产持仓", hapwLead: "代表 Clipli 平台上的作品与版权权益。", clipBalance: "CLIP 余额", clipLead: "由平台金库按规则分发的服务积分，可通过外部 DEX 兑换，但不代表作品所有权。", clipSupply: "供应策略", clipBuy: "获取方式", dexButton: "前往 DEX 兑换", dexNote: "将打开 BNB Chain 上的 PancakeSwap 兑换页面；请在钱包确认网络与代币信息。", mechanismDetails: "机制细节",
     holdings: "持仓数量", transferable: "可转移资产", recent: "最近记录", totalValue: "总参考价值",
     convertAsset: "创建发行授权", transferAsset: "发起资产行权", recentTransfers: "最近资产行权",
     asset: "资产", direction: "行权去向", value: "参考价值", status: "状态", date: "时间", clipHistory: "CLIP 过往交易", txType: "交易类型", txAsset: "关联对象", amount: "数量", txHash: "交易标识", positive: "收入", negative: "支出",
@@ -86,7 +86,7 @@ const translations = {
     worksEyebrow: "Clipli Screening", worksTitle: "Works", worksLead: "Explore Clipli shorts and series through their linked HAPW assets.",
     all: "All", featured: "Featured", play: "Play", views: "views", close: "Close", seedSource: "Seed content", details: "View details", detailEyebrow: "Work record", detailLead: "Review the work, linked HAPW, release state and domestic platform entry.", linkedHapw: "Linked HAPW", format: "Format", domesticRelease: "Domestic release", haiwenPlatform: "HAIWEN platform", openHaiwen: "Open HAIWEN", backWorks: "Back to works",
     assetsEyebrow: "Asset console", assetsTitle: "Asset dashboard", assetsLead: "Keep HAPW work assets and CLIP platform points in one auditable ledger.",
-    hapwHoldings: "HAPW holdings", hapwLead: "Work and rights assets issued on Clipli.", clipBalance: "CLIP balance", clipLead: "Service points distributed from the platform treasury. They can be swapped on an external DEX but do not represent work ownership.", clipSupply: "Supply policy", clipBuy: "Acquisition", dexButton: "Swap on DEX", dexNote: "Opens the external Uniswap swap page. Confirm network and token details in your wallet.", mechanismDetails: "Mechanism details",
+    hapwHoldings: "HAPW holdings", hapwLead: "Work and rights assets issued on Clipli.", clipBalance: "CLIP balance", clipLead: "Service points distributed from the platform treasury. They can be swapped on an external DEX but do not represent work ownership.", clipSupply: "Supply policy", clipBuy: "Acquisition", dexButton: "Swap on DEX", dexNote: "Opens PancakeSwap on BNB Chain. Confirm network and token details in your wallet.", mechanismDetails: "Mechanism details",
     holdings: "Holdings", transferable: "Transferable", recent: "Recent records", totalValue: "Reference value",
     convertAsset: "Create release license", transferAsset: "Exercise asset", recentTransfers: "Recent asset exercises",
     asset: "Asset", direction: "Direction", value: "Reference value", status: "Status", date: "Date", clipHistory: "CLIP transaction history", txType: "Type", txAsset: "Related item", amount: "Amount", txHash: "Transaction", positive: "In", negative: "Out",
@@ -789,18 +789,43 @@ async function renderWallet() {
     '<button class="wallet-row ', state.selectedWallet === wallet[0] ? "selected" : "", '" type="button" data-wallet="', wallet[0], '"><span class="wallet-logo">', wallet[1],
     '</span><span><strong>', wallet[0], '</strong><small>', t(wallet[2]), '</small></span><span>', profile.walletProvider === wallet[0] ? t("connected") : "→", "</span></button>"
   ].join("")).join("");
+  const connected = Boolean(profile.wallet && profile.walletStatus === "connected");
+  const address = connected ? escapeHtml(profile.wallet) : t("walletNotConnected");
+  const assetRows = (profile.walletAssets || []).map(asset => '<article class="wallet-asset-row"><div><strong>' + escapeHtml(asset.tokenId) + ' · ' + escapeHtml(asset.name) + '</strong><small>' + escapeHtml(asset.sourceCode) + ' · ' + escapeHtml(asset.externalAssetId) + '</small></div><span>' + escapeHtml(asset.balance) + '</span><b>' + (asset.canRedeem ? t("walletAssetRedeemable") : asset.redemptionStatus || t("walletAssetObserved")) + '</b></article>').join("");
+  const airdropRows = (profile.airdrops || []).map(item => '<article class="wallet-airdrop-row"><div><strong>' + money(item.amount) + ' ' + escapeHtml(item.token) + '</strong><small>' + escapeHtml(item.ruleCode) + (item.assetId ? ' · ' + escapeHtml(item.assetId) : '') + '</small></div><span class="status">' + escapeHtml(item.status) + '</span><b>' + (item.txHash ? escapeHtml(item.txHash) : t("airdropAwaitingExecution")) + '</b></article>').join("");
+  const walletSummary = '<section class="wallet-summary"><div><small>' + t("walletAddress") + '</small><strong class="wallet-address">' + address + '</strong></div><div><small>' + t("walletChain") + '</small><strong>' + (escapeHtml(profile.walletChainId || "-") ) + '</strong></div><div><small>' + t("walletConnectionStatus") + '</small><strong>' + (connected ? t("connected") : t("walletNotConnected")) + '</strong></div></section>';
+  const walletAssetsSection = '<section class="wallet-data-section"><header><div><p class="eyebrow">HAPW PORTFOLIO</p><h2>' + t("walletAssetsTitle") + '</h2><p>' + t("walletAssetsLead") + '</p></div><button class="button" type="button" id="refresh-wallet-assets" ' + (connected ? "" : "disabled") + '>' + t("refreshAssets") + '</button></header><div class="wallet-asset-list">' + (assetRows || '<p class="empty-inline">' + t("noWalletAssets") + '</p>') + '</div></section>';
+  const airdropsSection = '<section class="wallet-data-section"><header><div><p class="eyebrow">CLIP AIRDROP</p><h2>' + t("airdropsTitle") + '</h2><p>' + t("airdropsLead") + '</p></div><a class="text-link" href="#/clip">' + t("mechanismDetails") + ' →</a></header><div class="wallet-airdrop-list">' + (airdropRows || '<p class="empty-inline">' + t("noAirdrops") + '</p>') + '</div></section>';
   shell([
     '<div class="account-shell"><section class="account-card">', pageHead(t("walletEyebrow"), t("walletTitle"), t("walletLead")),
-    '<div class="account-content"><div class="wallet-list">', rows, '</div><button class="button primary wide" id="connect-wallet" style="margin-top:20px">', t("connectSelected"),
-    "</button></div></section></div>"
+    '<div class="account-content"><div class="wallet-list">', rows, '</div><div class="wallet-actions"><button class="button primary" id="connect-wallet" type="button">', connected ? t("connected") : t("connectSelected"), '</button><button class="button" id="disconnect-wallet" type="button" ', connected ? "" : "disabled", '>', t("disconnectWallet"), '</button></div>', walletSummary, walletAssetsSection, airdropsSection, '</div></section></div>'
   ].join(""));
+  if (window.ethereum && typeof window.ethereum.on === "function" && !window.__clipliWalletEventsBound) {
+    const refreshConnectedWallet = () => { if (state.route === "/wallet") renderWallet(); };
+    window.ethereum.on("accountsChanged", refreshConnectedWallet);
+    window.ethereum.on("chainChanged", refreshConnectedWallet);
+    window.__clipliWalletEventsBound = true;
+  }
   document.querySelectorAll("[data-wallet]").forEach(button => button.addEventListener("click", () => { state.selectedWallet = button.dataset.wallet; renderWallet(); }));
   document.getElementById("connect-wallet").addEventListener("click", async event => {
     if (!state.selectedWallet) return toast(t("chooseWallet"), "error");
     event.currentTarget.disabled = true;
-    try { await api("/api/profile/wallet", { method: "POST", body: JSON.stringify({ provider: state.selectedWallet }) }); toast(t("connected")); renderWallet(); }
+    try {
+      const provider = window.ethereum;
+      if (!provider || typeof provider.request !== "function") throw new Error(t("walletProviderUnavailable"));
+      const accounts = await provider.request({ method: "eth_requestAccounts" });
+      const addressValue = Array.isArray(accounts) && accounts[0];
+      if (!addressValue) throw new Error(t("walletAddressUnavailable"));
+      const chainId = await provider.request({ method: "eth_chainId" });
+      await api("/api/v1/wallet/connect", { method: "POST", body: JSON.stringify({ provider: state.selectedWallet, address: addressValue, chainId }) });
+      toast(t("connected")); renderWallet();
+    }
     catch (err) { toast(err.message, "error"); event.currentTarget.disabled = false; }
   });
+  const disconnect = document.getElementById("disconnect-wallet");
+  if (disconnect) disconnect.addEventListener("click", async () => { await api("/api/v1/wallet/connect", { method: "DELETE" }); toast(t("walletDisconnected")); renderWallet(); });
+  const refresh = document.getElementById("refresh-wallet-assets");
+  if (refresh) refresh.addEventListener("click", () => renderWallet());
 }
 
 async function renderSecurity() {

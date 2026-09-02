@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/StevenWXY/HAPE/internal/service"
@@ -16,7 +18,11 @@ import (
 func testHandler(t *testing.T) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(service.New(store.NewMemory(store.SeedState())), t.TempDir(), logger)
+	publicDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(publicDir, "admin.html"), []byte("<html>Clipli admin.js</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return New(service.New(store.NewMemory(store.SeedState())), publicDir, logger)
 }
 
 func TestHAPWAssetAPI(t *testing.T) {
@@ -213,6 +219,167 @@ func TestHAPWReadRoutesAndWriteWorkflow(t *testing.T) {
 	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/clip/treasury", nil)
 	if status != http.StatusOK || !bytes.Contains(data, []byte(`"conserved":true`)) {
 		t.Fatalf("treasury response does not prove conservation: status=%d body=%s", status, data)
+	}
+}
+
+func TestWalletAndAirdropAPIs(t *testing.T) {
+	handler := testHandler(t)
+	address := "0x1111111111111111111111111111111111111111"
+	status, data := doJSONRequest(t, handler, http.MethodGet, "/api/v1/wallet/assets?address="+address, nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"assetId":"asset-2048"`)) {
+		t.Fatalf("wallet assets status=%d body=%s", status, data)
+	}
+	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/wallet/connect", map[string]any{"provider": "MetaMask", "address": address, "chainId": "0x61"})
+	if status != http.StatusOK {
+		t.Fatalf("wallet connect status=%d", status)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/airdrop-rules", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"code":"hapw_redemption"`)) || !bytes.Contains(data, []byte(`"code":"admin_approved"`)) {
+		t.Fatalf("airdrop rules status=%d body=%s", status, data)
+	}
+	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/hapw/redemptions", map[string]any{"requestId": "wallet-api-redeem", "assetId": "asset-2048", "accepted": true})
+	if status != http.StatusCreated {
+		t.Fatalf("redemption status=%d", status)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/airdrops?address="+address, nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"status":"queued"`)) {
+		t.Fatalf("airdrops status=%d body=%s", status, data)
+	}
+}
+
+func TestAirdropAdminAndExecutorAuth(t *testing.T) {
+	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
+	t.Setenv("CLIPLI_AIRDROP_EXECUTOR_KEY", "executor-test-key")
+	handler := testHandler(t)
+	address := "0x2222222222222222222222222222222222222222"
+	status, _ := doJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/airdrops", map[string]any{"requestId": "admin-api-airdrop", "ruleCode": "admin_approved", "walletAddress": address, "chainId": "0x61", "amount": 12})
+	if status != http.StatusUnauthorized {
+		t.Fatalf("missing admin key status=%d", status)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops", bytes.NewReader([]byte(`{"requestId":"admin-api-airdrop","ruleCode":"admin_approved","walletAddress":"0x2222222222222222222222222222222222222222","chainId":"0x61","amount":12}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("admin create status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil || created.Data.ID == "" {
+		t.Fatalf("invalid admin response=%s", recorder.Body.String())
+	}
+	resultBody := []byte(`{"status":"confirmed","txHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	resultReq := httptest.NewRequest(http.MethodPost, "/api/v1/internal/airdrops/"+created.Data.ID+"/result", bytes.NewReader(resultBody))
+	resultReq.Header.Set("Content-Type", "application/json")
+	resultReq.Header.Set("X-Clipli-Executor-Key", "executor-test-key")
+	resultRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(resultRecorder, resultReq)
+	if resultRecorder.Code != http.StatusOK || !bytes.Contains(resultRecorder.Body.Bytes(), []byte(`"status":"confirmed"`)) {
+		t.Fatalf("executor result status=%d body=%s", resultRecorder.Code, resultRecorder.Body.String())
+	}
+}
+
+func TestAdminConsoleRoute(t *testing.T) {
+	handler := testHandler(t)
+	request := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("admin page status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("Clipli")) || !bytes.Contains(recorder.Body.Bytes(), []byte("admin.js")) {
+		t.Fatalf("admin page does not contain its independent shell: %s", recorder.Body.String())
+	}
+}
+
+func TestBNBAdminSimulation(t *testing.T) {
+	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
+	handler := testHandler(t)
+	address := "0x3333333333333333333333333333333333333333"
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bnb-networks", nil)
+	request.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"chainId":"0x61"`)) || !bytes.Contains(recorder.Body.Bytes(), []byte(`"simulationOnly":true`)) {
+		t.Fatalf("networks status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops", bytes.NewReader([]byte(`{"requestId":"bnb-sim-0001","ruleCode":"admin_approved","walletAddress":"`+address+`","chainId":"0x61","amount":12}`)))
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
+	created := httptest.NewRecorder()
+	handler.ServeHTTP(created, create)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil || payload.Data.ID == "" {
+		t.Fatalf("create payload=%s", created.Body.String())
+	}
+	simulate := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops/"+payload.Data.ID+"/simulate", bytes.NewReader([]byte(`{"chainId":"0x61"}`)))
+	simulate.Header.Set("Content-Type", "application/json")
+	simulate.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
+	simulated := httptest.NewRecorder()
+	handler.ServeHTTP(simulated, simulate)
+	if simulated.Code != http.StatusOK || !bytes.Contains(simulated.Body.Bytes(), []byte(`"simulated":true`)) || !bytes.Contains(simulated.Body.Bytes(), []byte(`"executionMode":"simulated-bnb"`)) {
+		t.Fatalf("simulate status=%d body=%s", simulated.Code, simulated.Body.String())
+	}
+}
+
+func TestExternalPlatformBindingAndRedemptionRoutes(t *testing.T) {
+	handler := testHandler(t)
+	status, data := doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/verification-codes", map[string]any{
+		"userId": "clip-user-http", "phone": "13800138000",
+	})
+	if status != http.StatusAccepted || !bytes.Contains(data, []byte(`"verificationId"`)) || bytes.Contains(data, []byte(`"code"`)) {
+		t.Fatalf("verification status=%d body=%s", status, data)
+	}
+	var challenge struct {
+		Challenge struct {
+			ID string `json:"id"`
+		} `json:"challenge"`
+	}
+	if err := json.Unmarshal(data, &challenge); err != nil || challenge.Challenge.ID == "" {
+		t.Fatalf("verification payload=%s", data)
+	}
+	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/bindings", map[string]any{
+		"userId": "clip-user-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("binding status=%d", status)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/users/clip-user-http/assets", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"totalQuantity":6`)) {
+		t.Fatalf("assets status=%d body=%s", status, data)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/users/clip-user-http/assets?tplIds=100001,100002", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"tplId":100001`)) || !bytes.Contains(data, []byte(`"count":1`)) {
+		t.Fatalf("asset counts status=%d body=%s", status, data)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/users/clip-user-http/assets/asset-2048/redemptions", map[string]any{
+		"serialNo": "serial-http-0001",
+	})
+	if status != http.StatusCreated || !bytes.Contains(data, []byte(`"status":"completed"`)) {
+		t.Fatalf("redemption status=%d body=%s", status, data)
+	}
+	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/users/clip-user-http/assets/asset-2048/redemptions", map[string]any{
+		"serialNumber": "serial-http-0001",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("idempotent redemption status=%d", status)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/redemptions", map[string]any{
+		"userId": "clip-user-http", "requestNo": "WO-HTTP-0002", "tplId": 100001, "num": 2,
+	})
+	if status != http.StatusCreated || !bytes.Contains(data, []byte(`"requestNo":"WO-HTTP-0002"`)) || !bytes.Contains(data, []byte(`"num":2`)) {
+		t.Fatalf("Haiwen redemption status=%d body=%s", status, data)
 	}
 }
 

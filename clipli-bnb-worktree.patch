@@ -1,0 +1,2332 @@
+diff --git a/AGENT.md b/AGENT.md
+index 89e3375..59cfc70 100644
+--- a/AGENT.md
++++ b/AGENT.md
+@@ -101,6 +101,9 @@ AIVideoGeneration  { id, requestId, assetId, title*, duration, quality, creditsU
+ CLIPAccount        { balance, quoteAsset, dexUrl, dexPool, hapwExchangeFeeRate }
+ CLIPTreasury       { mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, platformWallet, mintMode, distributionMode }
+ CLIPDistribution   { requestId, ruleCode, userRef, assetId, amount, before/after balances, createdAt }
++WalletAsset        { walletAddress, assetId, sourceCode, externalAssetId, balance, canRedeem, canExercise }
++AirdropRule        { code, trigger, formula, token, enabled, requiresWallet }
++AirdropRecord      { requestId, ruleCode, walletAddress, chainId, amount, status, allocationSource, txHash, createdAt }
+ AssetSource        { code, baseUrl, mode, status, lastSyncedAt, assetCount }
+ AssetSyncRun       { sourceCode, status, recordsRead, recordsValid, recordsSaved, startedAt, completedAt }
+ SessionPolicy      { mode, userRef, identityVerification, kycRequired, walletOptional, persistence }
+@@ -134,6 +137,13 @@ ExternalPlatform   { code, name, url }
+ - `GET /api/v1/clip/treasury`：一次性铸造总量、平台钱包余额、DEX 流动性配置、内部账本余额和守恒校验。
+ - `GET /api/v1/clip/distribution-rules`：中心化 CLIP 分发规则；本版只启用 HAPW 核销规则。
+ - `GET /api/v1/clip/distributions`：CLIP 分发流水，可按 `assetId` 或 `requestId` 筛选。
++- `POST /api/v1/wallet/connect`、`DELETE /api/v1/wallet/connect`：登记/断开 EIP-1193 钱包地址与网络；旧 `/api/profile/wallet` 继续兼容。
++- `GET /api/v1/wallet/assets`：按钱包地址返回外部平台同步的 HAPW 关联资产，只读且带来源标记。
++- `GET /api/v1/wallet/airdrop-eligibility`、`GET /api/v1/airdrop-rules`：查询规则和指定钱包的资格。
++- `GET /api/v1/airdrops`：按钱包或状态读取空投任务。
++- `GET/POST /api/v1/admin/airdrops`、`GET /api/v1/admin/airdrop-rules`：受 `CLIPLI_ADMIN_API_KEY` 保护的运营接口，支持指定钱包按规则创建空投。
++- `POST /api/v1/internal/airdrops/:id/result`：受 `CLIPLI_AIRDROP_EXECUTOR_KEY` 保护的外部执行器回调，推进 `queued → submitted → confirmed|failed`。
++- `GET /api/v1/admin/bnb-networks` 与 `POST /api/v1/admin/airdrops/:id/simulate`：BNB 测试边界。正式 BEP-20 合约上线前只确认中心化账本和任务状态，模拟回执使用 `sim-bnb-*`，不得当作真实交易哈希。
+ - `GET /api/v1/integrations/asset-requirements`：外部平台必须提供的资产、授权、媒体、事件、关联作品和可选 Webhook 接口清单。
+ - `GET /api/v1/integrations/asset-sources`、`GET /api/v1/integrations/asset-sources/:code`：外部资产源状态与最近同步时间。
+ - `GET /api/v1/integrations/asset-sync-runs`：同步批次、读取/校验/保存条数与失败原因。
+@@ -172,6 +182,8 @@ ExternalPlatform   { code, name, url }
+ - 外部资产源只读，不向平台回写。平台需要的上游接口、字段和签名要求由 `/api/v1/integrations/asset-requirements` 固化；同步失败保留最后一次有效快照并记录 `AssetSyncRun`。
+ - HAPW 对外同时提供前端兼容的扁平字段和结构化 `authorization`、`provenance`、`media`、`external` 字段；新消费者优先使用结构化字段。
+ - CLIP 的铸币动作不暴露为 API。服务层仅在成功核销时从平台金库按 `floor(creditYield × 0.40)` 分发；生成、授权和 HAPW 兑换费用回到金库，所有变化写入内部账本。
++- 钱包连接只记录地址、提供方和 chain ID，不接收私钥。HAPW 核销在已连接钱包上自动创建 `hapw_redemption` 空投任务；运营方可通过 `admin_approved` 规则向指定钱包预留 CLIP。真实链上转账由外部执行器使用平台钱包或托管签名服务完成，Clipli 只保存任务与交易哈希。
++- 运营密钥和执行器密钥只从 `CLIPLI_ADMIN_API_KEY`、`CLIPLI_AIRDROP_EXECUTOR_KEY` 环境变量读取，绝不进入前端或公开响应。生产环境如需证明钱包控制权，应增加 challenge / `personal_sign` 或 EIP-4361 验证；地址本身不等于身份认证。
+ - 所有写操作在服务层锁内完成校验和状态修改，禁止部分扣款；核销、生成、兑换、区域授权与行权由 `requestId` 保证幂等。
+ - 完整 API 修改必须同步更新 `api/openapi.yaml`、`docs/API.md` 和 HTTP 契约测试。
+ - HAPW、授权凭证、创作额度、CLIP、生成任务、资产行权必须为独立实体，以标识互相引用。
+diff --git a/README.md b/README.md
+index 532c8bf..44a9d5d 100644
+--- a/README.md
++++ b/README.md
+@@ -13,7 +13,7 @@ Clipli 是以 HAPW 授权证书为核心的 AI 视频创作与资产行权原型
+ - `api/openapi.yaml`：OpenAPI 3.1 接口规范。
+ - `docs/API.md`：面向产品与前端的中文接口总览。
+ 
+-当前仓储为进程内演示状态，重启后复位。原型不做真实身份验证或 KYC，钱包连接仅作为可选操作句柄。正式环境应把 `internal/store` 替换为 PostgreSQL，并把平台审计、钱包签名和外部平台凭据放在服务端边界内。
++当前仓储为进程内演示状态，重启后复位。原型不做真实身份验证或 KYC，钱包连接仅登记 EIP-1193 返回的地址与网络。钱包资产由外部资产平台快照提供；HAPW 核销后会为已连接钱包创建 CLIP 空投任务。真实链上发放由外部执行器完成，平台服务不接收私钥、不在浏览器签名。正式环境应把 `internal/store` 替换为 PostgreSQL，并把平台审计、钱包签名和外部平台凭据放在服务端边界内。
+ 
+ 作品和 HAPW 默认使用各外部平台的演示快照。部署时可设置 `WORK_SOURCE_URL` 接入作品 API，设置 `HAPW_ASSET_SOURCE_URL` 接入规范化 HAPW 资产 API；请求超时、状态码异常、字段不完整或返回为空时保留最后一次有效快照，并在同步记录中登记原因。
+ 
+@@ -47,3 +47,15 @@ npm test
+ 
+ - 完整接口清单：[docs/API.md](docs/API.md)
+ - OpenAPI 规范：[api/openapi.yaml](api/openapi.yaml)
++
++### 钱包与空投配置
++
++```bash
++CLIPLI_ADMIN_API_KEY=<operator-key> \
++CLIPLI_AIRDROP_EXECUTOR_KEY=<executor-callback-key> \
++PORT=4173 go run ./cmd/server
++```
++
++不配置上述变量时，公开钱包资产、资格和空投查询仍可用，运营创建与执行器回调接口返回配置缺失。外部执行器应轮询 `GET /api/v1/admin/airdrops`，使用平台托管钱包完成 CLIP 转账，再回调 `POST /api/v1/internal/airdrops/{id}/result`。详细请求体、规则公式和安全边界见 [docs/API.md](docs/API.md) 的“钱包资产与 CLIP 空投 API”。
++
++当前 CLIP 空投只接受 BNB Smart Chain 测试网 `0x61` 与主网 `0x38`。正式 BEP-20 合约、BNB RPC 和签名执行器尚未配置，运营控制台可调用 `POST /api/v1/admin/airdrops/{airdropId}/simulate` 验证地址、队列和中心化金库流程。返回的 `sim-bnb-*` 是平台模拟回执，不是链上交易；合约上线后再由外部执行器广播真实交易并回写 `0x` 哈希。
+diff --git a/api/openapi.yaml b/api/openapi.yaml
+index 005d0e5..6f9db54 100644
+--- a/api/openapi.yaml
++++ b/api/openapi.yaml
+@@ -21,6 +21,9 @@ tags:
+   - name: HAPW Exchanges
+   - name: Creation
+   - name: Account
++  - name: Wallets
++  - name: Airdrops
++  - name: Operations
+   - name: CLIP Treasury
+   - name: Integrations
+   - name: Compatibility
+@@ -359,6 +362,245 @@ paths:
+             application/json:
+               schema: { $ref: '#/components/schemas/SessionEnvelope' }
+ 
++  /api/v1/wallet/connect:
++    post:
++      tags: [Wallets]
++      summary: Connect an EIP-1193 wallet address
++      description: Stores the provider-returned address and chain metadata. Clipli never receives a private key or signs from the browser.
++      operationId: connectWalletV1
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema: { $ref: '#/components/schemas/WalletConnectRequest' }
++      responses:
++        '200':
++          description: Updated wallet profile
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++    delete:
++      tags: [Wallets]
++      summary: Disconnect the current wallet
++      operationId: disconnectWalletV1
++      responses:
++        '200':
++          description: Updated wallet profile
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
++
++  /api/v1/wallet/assets:
++    get:
++      tags: [Wallets]
++      summary: List Clipli-related HAPW assets observed for a wallet
++      description: Read-only assets are source-stamped from an external asset platform. The wallet address is not an ownership proof by itself.
++      operationId: listWalletAssets
++      parameters:
++        - $ref: '#/components/parameters/WalletAddress'
++      responses:
++        '200':
++          description: Wallet asset snapshot
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/WalletAssetListEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++
++  /api/v1/wallet/airdrop-eligibility:
++    get:
++      tags: [Wallets, Airdrops]
++      summary: Evaluate whether a wallet satisfies an airdrop rule
++      operationId: getWalletAirdropEligibility
++      parameters:
++        - $ref: '#/components/parameters/WalletAddress'
++        - name: ruleCode
++          in: query
++          required: true
++          schema: { type: string, examples: [hapw_redemption] }
++        - name: assetId
++          in: query
++          required: false
++          schema: { type: string }
++      responses:
++        '200':
++          description: Eligibility result
++          content:
++            application/json:
++              schema:
++                type: object
++                required: [data]
++                properties:
++                  data: { $ref: '#/components/schemas/AirdropEligibility' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++
++  /api/v1/airdrops:
++    get:
++      tags: [Airdrops]
++      summary: List airdrop records for a wallet
++      operationId: listAirdrops
++      parameters:
++        - name: address
++          in: query
++          required: false
++          schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        - name: status
++          in: query
++          required: false
++          schema: { type: string, enum: [queued, submitted, confirmed, failed] }
++      responses:
++        '200':
++          description: Airdrop records
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropListEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++
++  /api/v1/airdrop-rules:
++    get:
++      tags: [Airdrops]
++      summary: List enabled and disabled airdrop rules
++      operationId: listAirdropRules
++      responses:
++        '200':
++          description: Airdrop rules
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropRuleListEnvelope' }
++
++  /api/v1/admin/airdrops:
++    get:
++      tags: [Operations]
++      summary: List airdrop records for operators
++      security: [{ ClipliAdminKey: [] }]
++      operationId: listAdminAirdrops
++      parameters:
++        - name: walletAddress
++          in: query
++          schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        - name: status
++          in: query
++          schema: { type: string, enum: [queued, submitted, confirmed, failed] }
++      responses:
++        '200':
++          description: Operator airdrop records
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropListEnvelope' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++    post:
++      tags: [Operations]
++      summary: Create a specified-wallet airdrop or rule-based airdrop
++      security: [{ ClipliAdminKey: [] }]
++      operationId: createAdminAirdrop
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema: { $ref: '#/components/schemas/AirdropCreateRequest' }
++      responses:
++        '201':
++          description: Airdrop task queued
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
++        '200':
++          description: Existing result returned for the same requestId
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++
++  /api/v1/admin/airdrop-rules:
++    get:
++      tags: [Operations]
++      summary: List airdrop rules for operators
++      security: [{ ClipliAdminKey: [] }]
++      operationId: listAdminAirdropRules
++      responses:
++        '200':
++          description: Operator airdrop rules
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropRuleListEnvelope' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++
++  /api/v1/admin/bnb-networks:
++    get:
++      tags: [Operations]
++      summary: List BNB networks available to the airdrop console
++      description: Both entries are simulation-only until the CLIP BEP-20 contract and executor are deployed.
++      security: [{ ClipliAdminKey: [] }]
++      operationId: listBNBNetworks
++      responses:
++        '200':
++          description: BNB network configuration and simulation boundary
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/BNBNetworkListEnvelope' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++
++  /api/v1/admin/airdrops/{airdropId}/simulate:
++    parameters:
++      - name: airdropId
++        in: path
++        required: true
++        schema: { type: string }
++    post:
++      tags: [Operations]
++      summary: Simulate a BNB airdrop confirmation
++      description: Confirms the queued platform ledger entry and returns a simulated receipt. No contract call, RPC broadcast, or wallet signature is performed.
++      security: [{ ClipliAdminKey: [] }]
++      operationId: simulateAirdrop
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema: { $ref: '#/components/schemas/AirdropSimulationRequest' }
++      responses:
++        '200':
++          description: Simulated airdrop record
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '404': { $ref: '#/components/responses/NotFound' }
++        '409': { $ref: '#/components/responses/RateLimited' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++
++  /api/v1/internal/airdrops/{airdropId}/result:
++    parameters:
++      - name: airdropId
++        in: path
++        required: true
++        schema: { type: string }
++    post:
++      tags: [Operations]
++      summary: Record the external executor result for an airdrop
++      security: [{ ClipliExecutorKey: [] }]
++      operationId: updateAirdropResult
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema: { $ref: '#/components/schemas/AirdropResultRequest' }
++      responses:
++        '200':
++          description: Updated airdrop record
++          content:
++            application/json:
++              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
++        '400': { $ref: '#/components/responses/BadRequest' }
++        '401': { $ref: '#/components/responses/Unauthorized' }
++        '404': { $ref: '#/components/responses/NotFound' }
++        '503': { $ref: '#/components/responses/ServiceUnavailable' }
++
+   /api/v1/clip/treasury:
+     get:
+       tags: [CLIP Treasury]
+@@ -501,20 +743,22 @@ paths:
+   /api/profile/wallet:
+     post:
+       tags: [Account]
+-      summary: Connect a supported wallet provider
++      summary: Compatibility alias for POST /api/v1/wallet/connect
+       operationId: connectWallet
+       requestBody:
+         required: true
+         content:
+           application/json:
+-            schema:
+-              type: object
+-              required: [provider]
+-              properties:
+-                provider: { type: string, enum: [MetaMask, Coinbase Wallet, WalletConnect, Venly] }
++            schema: { $ref: '#/components/schemas/WalletConnectRequest' }
+       responses:
+         '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+         '400': { $ref: '#/components/responses/BadRequest' }
++    delete:
++      tags: [Account]
++      summary: Compatibility alias for DELETE /api/v1/wallet/connect
++      operationId: disconnectWallet
++      responses:
++        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+ 
+   /api/profile/overseas:
+     post:
+@@ -684,6 +928,12 @@ components:
+       in: query
+       required: false
+       schema: { type: string }
++    WalletAddress:
++      name: address
++      in: query
++      required: true
++      description: EVM wallet address
++      schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+ 
+   responses:
+     BadRequest:
+@@ -701,6 +951,28 @@ components:
+       content:
+         application/json:
+           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
++    Unauthorized:
++      description: Missing or invalid operator/executor key
++      content:
++        application/json:
++          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
++    ServiceUnavailable:
++      description: Required operator or executor configuration is unavailable
++      content:
++        application/json:
++          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
++
++  securitySchemes:
++    ClipliAdminKey:
++      type: apiKey
++      in: header
++      name: X-Clipli-Admin-Key
++      description: Operator key configured by the Clipli deployment.
++    ClipliExecutorKey:
++      type: apiKey
++      in: header
++      name: X-Clipli-Executor-Key
++      description: External airdrop executor callback key configured by the Clipli deployment.
+ 
+   schemas:
+     GenericDataEnvelope:
+@@ -709,6 +981,188 @@ components:
+       properties:
+         data: { type: object, additionalProperties: true }
+ 
++    WalletConnectRequest:
++      type: object
++      additionalProperties: false
++      required: [provider, address, chainId]
++      properties:
++        provider: { type: string, enum: [MetaMask, Coinbase Wallet, WalletConnect, Venly] }
++        address: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'], description: BNB Smart Chain Testnet or Mainnet. }
++
++    WalletAsset:
++      type: object
++      required: [id, walletAddress, assetId, tokenId, name, balance, standard, sourceCode, externalAssetId, syncStatus, lastSyncedAt, canRedeem, canExercise]
++      properties:
++        id: { type: string }
++        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        assetId: { type: string }
++        tokenId: { type: string }
++        name: { type: string }
++        balance: { type: string }
++        standard: { type: string, examples: [HAPW-1] }
++        sourceCode: { type: string }
++        externalAssetId: { type: string }
++        externalUrl: { type: string, format: uri }
++        syncStatus: { type: string, enum: [synced, stale, failed] }
++        lastSyncedAt: { type: string, format: date-time }
++        redemptionStatus: { type: string, enum: [available, redeemed, restricted] }
++        canRedeem: { type: boolean }
++        canExercise: { type: boolean }
++
++    WalletAssetListEnvelope:
++      type: object
++      required: [data]
++      properties:
++        data:
++          type: object
++          required: [walletAddress, items, totalItems, sourceOfTruth]
++          properties:
++            walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++            items:
++              type: array
++              items: { $ref: '#/components/schemas/WalletAsset' }
++            totalItems: { type: integer, minimum: 0 }
++            sourceOfTruth: { type: string, const: external-platform }
++
++    AirdropRule:
++      type: object
++      required: [code, name, trigger, formula, token, enabled, requiresWallet, description]
++      properties:
++        code: { type: string }
++        name: { type: string }
++        trigger: { type: string }
++        formula: { type: string }
++        token: { type: string, const: CLIP }
++        enabled: { type: boolean }
++        requiresWallet: { type: boolean }
++        description: { type: string }
++
++    AirdropRuleListEnvelope:
++      type: object
++      required: [data]
++      properties:
++        data:
++          type: object
++          required: [items, totalItems]
++          properties:
++            items:
++              type: array
++              items: { $ref: '#/components/schemas/AirdropRule' }
++            totalItems: { type: integer, minimum: 0 }
++
++    AirdropEligibility:
++      type: object
++      required: [ruleCode, walletAddress, token, eligible, reason]
++      properties:
++        ruleCode: { type: string }
++        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        assetId: { type: string }
++        token: { type: string, const: CLIP }
++        amount: { type: integer, minimum: 0 }
++        eligible: { type: boolean }
++        reason: { type: string }
++        existingId: { type: string }
++
++    AirdropRecord:
++      type: object
++      required: [id, requestId, ruleCode, walletAddress, chainId, token, amount, status, eligibility, executionMode, allocationSource, createdAt, updatedAt]
++      properties:
++        id: { type: string }
++        requestId: { type: string }
++        ruleCode: { type: string }
++        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        chainId: { type: string }
++        assetId: { type: string }
++        token: { type: string, const: CLIP }
++        amount: { type: integer, minimum: 1 }
++        status: { type: string, enum: [queued, submitted, confirmed, failed] }
++        eligibility: { type: string, enum: [eligible] }
++        executionMode: { type: string, enum: [external-executor, simulated-bnb] }
++        network: { type: string, enum: ['0x61', '0x38'] }
++        simulated: { type: boolean, description: True when the record was confirmed by the local simulator rather than a blockchain transaction. }
++        allocationSource: { type: string, enum: [redemption-entitlement, treasury-reservation] }
++        executorRef: { type: string }
++        txHash: { type: string }
++        failureReason: { type: string }
++        createdAt: { type: string, format: date-time }
++        updatedAt: { type: string, format: date-time }
++
++    AirdropListEnvelope:
++      type: object
++      required: [data]
++      properties:
++        data:
++          type: object
++          required: [items, totalItems]
++          properties:
++            items:
++              type: array
++              items: { $ref: '#/components/schemas/AirdropRecord' }
++            totalItems: { type: integer, minimum: 0 }
++
++    AirdropEnvelope:
++      type: object
++      required: [data]
++      properties:
++        data: { $ref: '#/components/schemas/AirdropRecord' }
++
++    AirdropCreateRequest:
++      type: object
++      additionalProperties: false
++      required: [requestId, ruleCode, walletAddress, chainId]
++      properties:
++        requestId: { type: string, minLength: 8, maxLength: 100 }
++        ruleCode: { type: string, enum: [hapw_redemption, admin_approved] }
++        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
++        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'], description: BNB Smart Chain Testnet (0x61/97) or Mainnet (0x38/56). }
++        assetId: { type: string }
++        amount: { type: integer, minimum: 1, description: Required for admin_approved; derived from redemption for hapw_redemption. }
++        token: { type: string, const: CLIP }
++
++    AirdropResultRequest:
++      type: object
++      additionalProperties: false
++      required: [status]
++      properties:
++        status: { type: string, enum: [submitted, confirmed, failed] }
++        txHash: { type: string }
++        executorRef: { type: string }
++        failureReason: { type: string }
++
++    BNBNetwork:
++      type: object
++      required: [chainId, name, network, nativeCurrency, contractDeployed, simulationOnly]
++      properties:
++        chainId: { type: string, enum: ['0x61', '0x38'] }
++        name: { type: string }
++        network: { type: string, enum: [testnet, mainnet] }
++        nativeCurrency: { type: string, enum: [tBNB, BNB] }
++        contractDeployed: { type: boolean, const: false }
++        simulationOnly: { type: boolean, const: true }
++
++    BNBNetworkListEnvelope:
++      type: object
++      required: [data]
++      properties:
++        data:
++          type: object
++          required: [items, contractDeployed, simulationOnly, note]
++          properties:
++            items:
++              type: array
++              items: { $ref: '#/components/schemas/BNBNetwork' }
++            contractDeployed: { type: boolean, const: false }
++            simulationOnly: { type: boolean, const: true }
++            note: { type: string }
++
++    AirdropSimulationRequest:
++      type: object
++      additionalProperties: false
++      required: [chainId]
++      properties:
++        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'] }
++
+     ErrorEnvelope:
+       type: object
+       required: [error]
+diff --git a/docs/API.md b/docs/API.md
+index c6b931c..51fe495 100644
+--- a/docs/API.md
++++ b/docs/API.md
+@@ -105,7 +105,120 @@ Content-Type: application/json
+ 
+ 总扣款公式为 `total = price + ceil(price × 5%)`。每个调用账户按 UTC 自然日最多成功兑换 2 枚，且每个储备份额只能领取一次；具体限额以 `GET /api/v1/hapw/exchange-policy` 返回值为准。
+ 
+-## 3. 平台业务 API（可选）
++## 3. 钱包资产与 CLIP 空投 API
++
++钱包接口采用浏览器钱包的 EIP-1193 标准。连接接口只登记用户选择的钱包地址、网络和提供方；Clipli 不接收私钥，也不在浏览器内保存平台空投密钥。钱包资产是外部资产平台同步后的只读快照，实际生产接入必须由来源平台提供持有人地址或按地址查询能力。
++
++### 3.1 连接钱包
++
++```http
++POST /api/v1/wallet/connect
++Content-Type: application/json
++
++{
++  "provider": "MetaMask",
++  "address": "0x1111111111111111111111111111111111111111",
++  "chainId": "0x61"
++}
++```
++
++`provider` 支持 `MetaMask`、`Coinbase Wallet`、`WalletConnect` 和 `Venly`。`address` 必须是 EVM 地址，`chainId` 只接受 BNB Smart Chain 测试网 `0x61`（97）或主网 `0x38`（56）。旧客户端仍可使用 `POST /api/profile/wallet`；断开连接使用 `DELETE /api/v1/wallet/connect`（兼容路径为 `DELETE /api/profile/wallet`）。生产环境若需要证明签名归属，应在业务层增加 challenge / `personal_sign` 或 EIP-4361 校验；仅凭地址不能证明控制权。
++
++### 3.2 查询钱包内关联资产
++
++```http
++GET /api/v1/wallet/assets?address=0x1111111111111111111111111111111111111111
++```
++
++返回 `walletAddress`、`items` 和 `totalItems`。每个 `WalletAsset` 包含 `assetId`、`tokenId`、余额、HAPW 标准、来源平台代码、来源资产 ID、同步状态、`canRedeem` 和 `canExercise`。响应中的 `sourceOfTruth` 固定为 `external-platform`。接口不会把未在外部平台快照中确认的资产当作持仓。
++
++外部资产源应满足以下任一方式：
++
++- `GET /assets?owner={walletAddress}` 返回该地址的资产；或
++- 全量 `GET /assets` 的每条资产返回规范化 `owner` 字段，Clipli 再按地址过滤。
++
++### 3.3 空投规则与资格
++
++```http
++GET /api/v1/airdrop-rules
++GET /api/v1/wallet/airdrop-eligibility?ruleCode=hapw_redemption&address=0x1111111111111111111111111111111111111111&assetId=asset-2048
++```
++
++内置规则如下：
++
++| 规则 | 触发条件 | 数量 | 资金来源 |
++| --- | --- | --- | --- |
++| `hapw_redemption` | 指定 HAPW 核销成功，且钱包已连接 | `floor(creditYield × 0.40)` CLIP | 该次核销已登记的中心化分发额度，不重复扣金库 |
++| `admin_approved` | 管理员批准指定钱包与数量 | 请求中的 `amount` CLIP | 从 CLIP 平台金库预留，失败时返还 |
++
++资格接口会返回 `eligible`、`reason`、预计 `amount` 以及已创建的 `existingId`。核销时若钱包已连接，平台自动创建空投任务；若核销时未连接，管理员可在用户连接并完成资格确认后使用 `admin_approved` 或按内部流程补建任务。
++
++### 3.4 空投创建、执行与查询
++
++#### BNB 网络测试边界
++
++CLIP 的目标发行网络为 BNB Smart Chain。当前尚未部署正式 BEP-20 合约，也未接入 BNB RPC 或平台钱包签名服务，因此所有空投先限定在两个 BNB 网络配置中：测试网 `0x61`（97）和主网 `0x38`（56）。两者都返回 `simulationOnly: true`，主网选项也不会产生真实主网交易。
++
++运营控制台可以用模拟执行验证以下闭环：校验 EVM 地址 → 创建空投任务 → 预留 CLIP 金库额度 → 确认任务 → 返回可追踪的模拟回执。模拟回执使用 `sim-bnb-...` 前缀，故意不采用 `0x` 交易哈希格式；它只代表平台账本状态已确认，不代表链上交易已经打包。
++
++读取网络配置：
++
++```http
++GET /api/v1/admin/bnb-networks
++X-Clipli-Admin-Key: <operator-key>
++```
++
++创建任务时使用 BNB Chain ID：
++
++用户和合作方可读取：
++
++```http
++GET /api/v1/airdrops?address=0x1111111111111111111111111111111111111111&status=queued
++```
++
++平台运营方使用 `X-Clipli-Admin-Key` 调用：
++
++```http
++POST /api/v1/admin/airdrops
++X-Clipli-Admin-Key: <operator-key>
++Content-Type: application/json
++
++{
++  "requestId": "airdrop-wallet-2048-001",
++  "ruleCode": "admin_approved",
++  "walletAddress": "0x2222222222222222222222222222222222222222",
++  "chainId": "0x61",
++  "amount": 25,
++  "token": "CLIP",
++  "assetId": "asset-2048"
++}
++```
++
++尚未部署合约时，可由运营控制台调用模拟执行：
++
++```http
++POST /api/v1/admin/airdrops/{airdropId}/simulate
++X-Clipli-Admin-Key: <operator-key>
++Content-Type: application/json
++
++{ "chainId": "0x61" }
++```
++
++成功响应中的 `status` 为 `confirmed`、`executionMode` 为 `simulated-bnb`、`simulated` 为 `true`，并带有 `network` 与 `txHash: "sim-bnb-..."`。该接口不会消耗 BNB、不会调用合约，也不会写入私钥。合约上线后，保留同一空投创建接口，由外部执行器通过 BNB RPC 广播真实交易，再使用下面的执行器回写接口提交真实 `0x` 交易哈希。
++
++同一 `requestId` 幂等。`admin_approved` 会先从中心化金库预留 CLIP；任务失败时自动释放预留。空投记录状态为 `queued → submitted → confirmed`，失败状态为 `failed`。外部执行器负责使用平台钱包或托管签名服务完成链上转账，然后回调：
++
++```http
++POST /api/v1/internal/airdrops/{airdropId}/result
++X-Clipli-Executor-Key: <executor-key>
++Content-Type: application/json
++
++{ "status": "confirmed", "txHash": "0x...", "executorRef": "batch-2026-08-22-01" }
++```
++
++执行器密钥只在服务端环境变量 `CLIPLI_AIRDROP_EXECUTOR_KEY` 中配置，运营密钥只在 `CLIPLI_ADMIN_API_KEY` 中配置。Clipli 前端永远不接触这两类密钥，也不直接签名或广播交易。建议执行器按 `walletAddress + chainId + token + amount + airdropId` 做二次幂等校验，并将链上交易哈希回写。
++
++## 4. 平台业务 API（可选）
+ 
+ 以下接口用于接入 Clipli 的创作、账户和资产操作流程，不属于外部资产源的最小接入要求。是否开放以及所需权限由部署方配置。
+ 
+@@ -121,13 +234,14 @@ Content-Type: application/json
+ 
+ 生成任务支持 `duration` 为 15、30、60 秒，`quality` 为 `standard` 或 `pro`。额度为 `ceil(duration × qualityFactor)`，CLIP 为 `ceil(额度 × 0.2)`。
+ 
+-## 4. 外部资产源与 CLIP 金库 API
++## 5. 外部资产源与 CLIP 金库 API
+ 
+ Clipli 的 HAPW 数据以外部平台为事实来源，服务端只做规范化、校验、缓存和操作记录。平台接入方需要提供以下上游接口：
+ 
+ | 上游接口 | 必需字段 | 用途 |
+ | --- | --- | --- |
+-| `GET /assets` | `id`、`tokenId`、`name`、`rightsHolder`、`status`、`authorization`、`provenance` | 首次全量或游标增量同步 |
++| `GET /assets` | `id`、`tokenId`、`name`、`owner`、`rightsHolder`、`status`、`authorization`、`provenance` | 首次全量或游标增量同步；`owner` 用于钱包资产过滤 |
++| `GET /assets?owner={walletAddress}`（推荐） | 同上 | 直接返回指定钱包的 HAPW 关联资产 |
+ | `GET /assets/{id}` | `id`、`tokenId`、`status`、`owner`、`externalUrl`、`updatedAt` | 详情与状态校准 |
+ | `GET /assets/{id}/authorization` | `holder`、`scope`、`territories`、`usageTypes`、`validFrom` | 授权边界 |
+ | `GET /assets/{id}/media` | `linkedWorkIds`、`format` | 素材和作品关联 |
+@@ -150,7 +264,7 @@ CLIP 不是公开铸币接口：`GET /api/v1/clip/treasury` 返回一次性铸
+ 
+ `GET /api/v1/session` 用于获取当前调用上下文与可用操作能力。账户、身份、钱包和持久化策略由部署方配置；合作方不应仅凭钱包地址推断版权、资产或平台账户权限。
+ 
+-## 5. 平台兼容 API（非外部资产源必需）
++## 6. 平台兼容 API（非外部资产源必需）
+ 
+ 以下接口用于平台站点和既有客户端兼容，外部资产平台通常无需接入。它们与 `/api/v1` 使用相同的业务状态和规则：
+ 
+@@ -169,7 +283,7 @@ CLIP 不是公开铸币接口：`GET /api/v1/clip/treasury` 返回一次性铸
+ 
+ 详细字段、状态码和可执行请求以 [`api/openapi.yaml`](../api/openapi.yaml) 为准。OpenAPI 文件中的 `servers` 地址是部署占位符，实际域名以合作接入信息为准。
+ 
+-## 6. 常见状态码
++## 7. 常见状态码
+ 
+ | HTTP | 错误码示例 | 含义 |
+ | --- | --- | --- |
+diff --git a/internal/domain/models.go b/internal/domain/models.go
+index bdddf94..d160ee2 100644
+--- a/internal/domain/models.go
++++ b/internal/domain/models.go
+@@ -336,13 +336,70 @@ type ProfileSettings struct {
+ }
+ 
+ type Profile struct {
+-	Wallet          string          `json:"wallet"`
+-	WalletProvider  string          `json:"walletProvider"`
+-	OverseasAccount string          `json:"overseasAccount"`
+-	Phone           string          `json:"phone"`
+-	Level           int             `json:"level"`
+-	Points          int             `json:"points"`
+-	Settings        ProfileSettings `json:"settings"`
++	Wallet            string          `json:"wallet"`
++	WalletProvider    string          `json:"walletProvider"`
++	WalletChainID     string          `json:"walletChainId,omitempty"`
++	WalletStatus      string          `json:"walletStatus,omitempty"`
++	WalletConnectedAt string          `json:"walletConnectedAt,omitempty"`
++	OverseasAccount   string          `json:"overseasAccount"`
++	Phone             string          `json:"phone"`
++	Level             int             `json:"level"`
++	Points            int             `json:"points"`
++	Settings          ProfileSettings `json:"settings"`
++}
++
++// WalletAsset is a source-stamped, read-only view of a Clipli-related asset
++// observed for a connected wallet. It does not transfer custody or prove
++// ownership beyond the configured source platform's response.
++type WalletAsset struct {
++	ID               string `json:"id"`
++	WalletAddress    string `json:"walletAddress"`
++	AssetID          string `json:"assetId"`
++	TokenID          string `json:"tokenId"`
++	Name             string `json:"name"`
++	Balance          string `json:"balance"`
++	Standard         string `json:"standard"`
++	SourceCode       string `json:"sourceCode"`
++	ExternalAssetID  string `json:"externalAssetId"`
++	ExternalURL      string `json:"externalUrl,omitempty"`
++	SyncStatus       string `json:"syncStatus"`
++	LastSyncedAt     string `json:"lastSyncedAt"`
++	RedemptionStatus string `json:"redemptionStatus,omitempty"`
++	CanRedeem        bool   `json:"canRedeem"`
++	CanExercise      bool   `json:"canExercise"`
++}
++
++type AirdropRule struct {
++	Code           string `json:"code"`
++	Name           string `json:"name"`
++	Trigger        string `json:"trigger"`
++	Formula        string `json:"formula"`
++	Token          string `json:"token"`
++	Enabled        bool   `json:"enabled"`
++	RequiresWallet bool   `json:"requiresWallet"`
++	Description    string `json:"description"`
++}
++
++type AirdropRecord struct {
++	ID               string `json:"id"`
++	RequestID        string `json:"requestId"`
++	RuleCode         string `json:"ruleCode"`
++	WalletAddress    string `json:"walletAddress"`
++	ChainID          string `json:"chainId"`
++	AssetID          string `json:"assetId,omitempty"`
++	Token            string `json:"token"`
++	Amount           int    `json:"amount"`
++	Status           string `json:"status"`
++	Eligibility      string `json:"eligibility"`
++	ExecutionMode    string `json:"executionMode"`
++	Network          string `json:"network,omitempty"`
++	Simulated        bool   `json:"simulated,omitempty"`
++	AllocationSource string `json:"allocationSource"`
++	ExecutorRef      string `json:"executorRef,omitempty"`
++	TxHash           string `json:"txHash,omitempty"`
++	FailureReason    string `json:"failureReason,omitempty"`
++	CreatedAt        string `json:"createdAt"`
++	UpdatedAt        string `json:"updatedAt"`
+ }
+ 
+ type AssetEvent struct {
+diff --git a/internal/httpapi/server.go b/internal/httpapi/server.go
+index 0d8755b..c9377c0 100644
+--- a/internal/httpapi/server.go
++++ b/internal/httpapi/server.go
+@@ -1,6 +1,7 @@
+ package httpapi
+ 
+ import (
++	"crypto/subtle"
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+@@ -19,20 +20,30 @@ import (
+ )
+ 
+ type Handler struct {
+-	service   *service.Service
+-	publicDir string
+-	logger    *slog.Logger
++	service     *service.Service
++	publicDir   string
++	logger      *slog.Logger
++	adminKey    string
++	executorKey string
+ }
+ 
+ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) http.Handler {
+-	handler := &Handler{service: serviceLayer, publicDir: publicDir, logger: logger}
++	handler := &Handler{service: serviceLayer, publicDir: publicDir, logger: logger, adminKey: os.Getenv("CLIPLI_ADMIN_API_KEY"), executorKey: os.Getenv("CLIPLI_AIRDROP_EXECUTOR_KEY")}
+ 	mux := http.NewServeMux()
+ 
+ 	// Operational endpoint.
+ 	mux.HandleFunc("GET /api/health", handler.health)
++	mux.HandleFunc("GET /admin", handler.adminPage)
++	mux.HandleFunc("GET /admin/", handler.adminPage)
+ 
+ 	// Versioned HAPW API.
+ 	mux.HandleFunc("GET /api/v1/session", handler.session)
++	mux.HandleFunc("POST /api/v1/wallet/connect", handler.connectWallet)
++	mux.HandleFunc("DELETE /api/v1/wallet/connect", handler.disconnectWallet)
++	mux.HandleFunc("GET /api/v1/wallet/assets", handler.walletAssets)
++	mux.HandleFunc("GET /api/v1/wallet/airdrop-eligibility", handler.walletAirdropEligibility)
++	mux.HandleFunc("GET /api/v1/airdrops", handler.airdrops)
++	mux.HandleFunc("GET /api/v1/airdrop-rules", handler.airdropRules)
+ 	mux.HandleFunc("GET /api/v1/hapw/summary", handler.hapwSummary)
+ 	mux.HandleFunc("GET /api/v1/hapw/assets", handler.hapwAssets)
+ 	mux.HandleFunc("GET /api/v1/hapw/assets/{assetID}", handler.hapwAsset)
+@@ -56,6 +67,12 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
+ 	mux.HandleFunc("GET /api/v1/integrations/asset-sources", handler.assetSources)
+ 	mux.HandleFunc("GET /api/v1/integrations/asset-sources/{sourceCode}", handler.assetSource)
+ 	mux.HandleFunc("GET /api/v1/integrations/asset-sync-runs", handler.assetSyncRuns)
++	mux.HandleFunc("GET /api/v1/admin/airdrops", handler.adminAirdrops)
++	mux.HandleFunc("POST /api/v1/admin/airdrops", handler.adminCreateAirdrop)
++	mux.HandleFunc("POST /api/v1/admin/airdrops/{airdropID}/simulate", handler.simulateAirdrop)
++	mux.HandleFunc("GET /api/v1/admin/bnb-networks", handler.adminBNBNetworks)
++	mux.HandleFunc("GET /api/v1/admin/airdrop-rules", handler.adminAirdropRules)
++	mux.HandleFunc("POST /api/v1/internal/airdrops/{airdropID}/result", handler.updateAirdropResult)
+ 
+ 	// Existing browser-client contract.
+ 	mux.HandleFunc("GET /api/overview", handler.overview)
+@@ -71,6 +88,7 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
+ 	mux.HandleFunc("POST /api/transfers", handler.createExercise)
+ 	mux.HandleFunc("POST /api/clip/hapw-exchanges", handler.createExchange)
+ 	mux.HandleFunc("POST /api/profile/wallet", handler.connectWallet)
++	mux.HandleFunc("DELETE /api/profile/wallet", handler.disconnectWallet)
+ 	mux.HandleFunc("POST /api/profile/overseas", handler.setOverseasAccount)
+ 	mux.HandleFunc("DELETE /api/profile/overseas", handler.clearOverseasAccount)
+ 	mux.HandleFunc("PATCH /api/profile/settings", handler.updateSettings)
+@@ -84,6 +102,15 @@ func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
+ 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "ok", "service": "clipli-api", "runtime": "go", "time": time.Now().UTC().Format(time.RFC3339)}})
+ }
+ 
++func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
++	if r.Method != http.MethodGet && r.Method != http.MethodHead {
++		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
++		return
++	}
++	w.Header().Set("Content-Type", "text/html; charset=utf-8")
++	http.ServeFile(w, r, filepath.Join(h.publicDir, "admin.html"))
++}
++
+ func (h *Handler) overview(w http.ResponseWriter, _ *http.Request) {
+ 	state := h.service.Snapshot()
+ 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+@@ -145,10 +172,13 @@ func (h *Handler) studio(w http.ResponseWriter, _ *http.Request) {
+ 
+ func (h *Handler) profile(w http.ResponseWriter, _ *http.Request) {
+ 	state := h.service.Snapshot()
++	walletAssets, _ := h.service.WalletAssets(state.Profile.Wallet)
++	airdrops, _ := h.service.Airdrops(state.Profile.Wallet, "")
+ 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+-		"wallet": state.Profile.Wallet, "walletProvider": state.Profile.WalletProvider, "overseasAccount": state.Profile.OverseasAccount,
++		"wallet": state.Profile.Wallet, "walletProvider": state.Profile.WalletProvider, "walletChainId": state.Profile.WalletChainID, "walletStatus": state.Profile.WalletStatus, "walletConnectedAt": state.Profile.WalletConnectedAt, "overseasAccount": state.Profile.OverseasAccount,
+ 		"phone": state.Profile.Phone, "level": state.Profile.Level, "points": state.Profile.Points,
+ 		"settings": state.Profile.Settings, "clipBalance": state.CLIP.Balance, "session": state.Session,
++		"walletAssets": walletAssets, "airdrops": airdrops,
+ 	}})
+ }
+ 
+@@ -175,6 +205,129 @@ func (h *Handler) clipDistributionRules(w http.ResponseWriter, _ *http.Request)
+ 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+ }
+ 
++func (h *Handler) walletAssets(w http.ResponseWriter, r *http.Request) {
++	address := r.URL.Query().Get("address")
++	if address == "" {
++		address = h.service.Snapshot().Profile.Wallet
++	}
++	items, err := h.service.WalletAssets(address)
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"walletAddress": address, "items": items, "totalItems": len(items), "sourceOfTruth": "external-platform"}})
++}
++
++func (h *Handler) walletAirdropEligibility(w http.ResponseWriter, r *http.Request) {
++	address := r.URL.Query().Get("address")
++	if address == "" {
++		address = h.service.Snapshot().Profile.Wallet
++	}
++	eligibility, err := h.service.AirdropEligibility(r.URL.Query().Get("ruleCode"), address, r.URL.Query().Get("assetId"))
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": eligibility})
++}
++
++func (h *Handler) airdrops(w http.ResponseWriter, r *http.Request) {
++	address := r.URL.Query().Get("address")
++	if address == "" {
++		address = h.service.Snapshot().Profile.Wallet
++	}
++	items, err := h.service.Airdrops(address, r.URL.Query().Get("status"))
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
++}
++
++func (h *Handler) airdropRules(w http.ResponseWriter, _ *http.Request) {
++	items := h.service.AirdropRules()
++	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
++}
++
++func (h *Handler) adminAirdropRules(w http.ResponseWriter, r *http.Request) {
++	if !h.requireAdmin(w, r) {
++		return
++	}
++	h.airdropRules(w, r)
++}
++
++func (h *Handler) adminAirdrops(w http.ResponseWriter, r *http.Request) {
++	if !h.requireAdmin(w, r) {
++		return
++	}
++	items, err := h.service.Airdrops(r.URL.Query().Get("walletAddress"), r.URL.Query().Get("status"))
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
++}
++
++func (h *Handler) adminCreateAirdrop(w http.ResponseWriter, r *http.Request) {
++	if !h.requireAdmin(w, r) {
++		return
++	}
++	var input service.AirdropInput
++	if !decodeBody(w, r, &input) {
++		return
++	}
++	result, idempotent, err := h.service.CreateAirdrop(input)
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, creationStatus(idempotent), map[string]any{"data": result})
++}
++
++func (h *Handler) adminBNBNetworks(w http.ResponseWriter, r *http.Request) {
++	if !h.requireAdmin(w, r) {
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
++		"items": service.BNBChainConfigs(), "contractDeployed": false, "simulationOnly": true,
++		"note": "No BEP-20 contract or chain RPC is configured yet. Simulation confirms the platform ledger and queue flow only.",
++	}})
++}
++
++func (h *Handler) simulateAirdrop(w http.ResponseWriter, r *http.Request) {
++	if !h.requireAdmin(w, r) {
++		return
++	}
++	var input struct {
++		ChainID string `json:"chainId"`
++	}
++	if !decodeBody(w, r, &input) {
++		return
++	}
++	result, err := h.service.SimulateAirdrop(r.PathValue("airdropID"), input.ChainID)
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": result})
++}
++
++func (h *Handler) updateAirdropResult(w http.ResponseWriter, r *http.Request) {
++	if !h.requireExecutor(w, r) {
++		return
++	}
++	var input service.AirdropResultInput
++	if !decodeBody(w, r, &input) {
++		return
++	}
++	result, err := h.service.UpdateAirdrop(r.PathValue("airdropID"), input)
++	if err != nil {
++		h.writeServiceError(w, err)
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"data": result})
++}
++
+ func (h *Handler) clipDistributions(w http.ResponseWriter, r *http.Request) {
+ 	items := h.service.Snapshot().Distributions
+ 	assetID, requestID := r.URL.Query().Get("assetId"), r.URL.Query().Get("requestId")
+@@ -217,7 +370,8 @@ func (h *Handler) assetRequirements(w http.ResponseWriter, _ *http.Request) {
+ 		"sourceOfTruth":   "external-platform",
+ 		"authentication":  "provider-api-key-or-signed-service-account; never exposed to browser",
+ 		"requiredEndpoints": []map[string]any{
+-			{"method": "GET", "path": "/assets", "purpose": "full or cursor-based HAPW asset list", "requiredFields": []string{"id", "tokenId", "name", "rightsHolder", "status", "authorization", "provenance"}},
++			{"method": "GET", "path": "/assets", "purpose": "full or cursor-based HAPW asset list; each record should include owner", "requiredFields": []string{"id", "tokenId", "name", "owner", "rightsHolder", "status", "authorization", "provenance"}},
++			{"method": "GET", "path": "/assets?owner={walletAddress}", "purpose": "recommended wallet portfolio query", "requiredFields": []string{"id", "tokenId", "name", "owner", "status", "externalUrl", "updatedAt"}},
+ 			{"method": "GET", "path": "/assets/{assetId}", "purpose": "single asset detail and current state", "requiredFields": []string{"id", "tokenId", "status", "owner", "externalUrl", "updatedAt"}},
+ 			{"method": "GET", "path": "/assets/{assetId}/authorization", "purpose": "rights scope and territories", "requiredFields": []string{"holder", "scope", "territories", "usageTypes", "validFrom"}},
+ 			{"method": "GET", "path": "/assets/{assetId}/media", "purpose": "linked work and preview metadata", "requiredFields": []string{"linkedWorkIds", "format"}},
+@@ -432,13 +586,11 @@ func (h *Handler) createExchange(w http.ResponseWriter, r *http.Request) {
+ }
+ 
+ func (h *Handler) connectWallet(w http.ResponseWriter, r *http.Request) {
+-	var input struct {
+-		Provider string `json:"provider"`
+-	}
++	var input service.WalletConnectInput
+ 	if !decodeBody(w, r, &input) {
+ 		return
+ 	}
+-	profile, err := h.service.ConnectWallet(input.Provider)
++	profile, err := h.service.ConnectWallet(input)
+ 	if err != nil {
+ 		h.writeServiceError(w, err)
+ 		return
+@@ -446,6 +598,10 @@ func (h *Handler) connectWallet(w http.ResponseWriter, r *http.Request) {
+ 	writeJSON(w, http.StatusOK, map[string]any{"data": profile})
+ }
+ 
++func (h *Handler) disconnectWallet(w http.ResponseWriter, _ *http.Request) {
++	writeJSON(w, http.StatusOK, map[string]any{"data": h.service.DisconnectWallet()})
++}
++
+ func (h *Handler) setOverseasAccount(w http.ResponseWriter, r *http.Request) {
+ 	var input struct {
+ 		Account string `json:"account"`
+@@ -505,6 +661,27 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
+ 	writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+ }
+ 
++func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
++	return requireSecret(w, r, h.adminKey, "X-Clipli-Admin-Key", "admin_not_configured", "admin_unauthorized")
++}
++
++func (h *Handler) requireExecutor(w http.ResponseWriter, r *http.Request) bool {
++	return requireSecret(w, r, h.executorKey, "X-Clipli-Executor-Key", "executor_not_configured", "executor_unauthorized")
++}
++
++func requireSecret(w http.ResponseWriter, r *http.Request, configured, header, missingCode, invalidCode string) bool {
++	if strings.TrimSpace(configured) == "" {
++		writeError(w, http.StatusServiceUnavailable, missingCode, "This protected integration is not configured")
++		return false
++	}
++	received := r.Header.Get(header)
++	if subtle.ConstantTimeCompare([]byte(received), []byte(configured)) != 1 {
++		writeError(w, http.StatusUnauthorized, invalidCode, "The integration credential is invalid")
++		return false
++	}
++	return true
++}
++
+ func (h *Handler) security(next http.Handler) http.Handler {
+ 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+diff --git a/internal/httpapi/server_test.go b/internal/httpapi/server_test.go
+index 440f2cd..a491a19 100644
+--- a/internal/httpapi/server_test.go
++++ b/internal/httpapi/server_test.go
+@@ -7,6 +7,8 @@ import (
+ 	"log/slog"
+ 	"net/http"
+ 	"net/http/httptest"
++	"os"
++	"path/filepath"
+ 	"testing"
+ 
+ 	"github.com/StevenWXY/HAPE/internal/service"
+@@ -16,7 +18,11 @@ import (
+ func testHandler(t *testing.T) http.Handler {
+ 	t.Helper()
+ 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+-	return New(service.New(store.NewMemory(store.SeedState())), t.TempDir(), logger)
++	publicDir := t.TempDir()
++	if err := os.WriteFile(filepath.Join(publicDir, "admin.html"), []byte("<html>Clipli admin.js</html>"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	return New(service.New(store.NewMemory(store.SeedState())), publicDir, logger)
+ }
+ 
+ func TestHAPWAssetAPI(t *testing.T) {
+@@ -216,6 +222,117 @@ func TestHAPWReadRoutesAndWriteWorkflow(t *testing.T) {
+ 	}
+ }
+ 
++func TestWalletAndAirdropAPIs(t *testing.T) {
++	handler := testHandler(t)
++	address := "0x1111111111111111111111111111111111111111"
++	status, data := doJSONRequest(t, handler, http.MethodGet, "/api/v1/wallet/assets?address="+address, nil)
++	if status != http.StatusOK || !bytes.Contains(data, []byte(`"assetId":"asset-2048"`)) {
++		t.Fatalf("wallet assets status=%d body=%s", status, data)
++	}
++	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/wallet/connect", map[string]any{"provider": "MetaMask", "address": address, "chainId": "0x61"})
++	if status != http.StatusOK {
++		t.Fatalf("wallet connect status=%d", status)
++	}
++	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/airdrop-rules", nil)
++	if status != http.StatusOK || !bytes.Contains(data, []byte(`"code":"hapw_redemption"`)) || !bytes.Contains(data, []byte(`"code":"admin_approved"`)) {
++		t.Fatalf("airdrop rules status=%d body=%s", status, data)
++	}
++	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/hapw/redemptions", map[string]any{"requestId": "wallet-api-redeem", "assetId": "asset-2048", "accepted": true})
++	if status != http.StatusCreated {
++		t.Fatalf("redemption status=%d", status)
++	}
++	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/airdrops?address="+address, nil)
++	if status != http.StatusOK || !bytes.Contains(data, []byte(`"status":"queued"`)) {
++		t.Fatalf("airdrops status=%d body=%s", status, data)
++	}
++}
++
++func TestAirdropAdminAndExecutorAuth(t *testing.T) {
++	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
++	t.Setenv("CLIPLI_AIRDROP_EXECUTOR_KEY", "executor-test-key")
++	handler := testHandler(t)
++	address := "0x2222222222222222222222222222222222222222"
++	status, _ := doJSONRequest(t, handler, http.MethodPost, "/api/v1/admin/airdrops", map[string]any{"requestId": "admin-api-airdrop", "ruleCode": "admin_approved", "walletAddress": address, "chainId": "0x61", "amount": 12})
++	if status != http.StatusUnauthorized {
++		t.Fatalf("missing admin key status=%d", status)
++	}
++	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops", bytes.NewReader([]byte(`{"requestId":"admin-api-airdrop","ruleCode":"admin_approved","walletAddress":"0x2222222222222222222222222222222222222222","chainId":"0x61","amount":12}`)))
++	request.Header.Set("Content-Type", "application/json")
++	request.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
++	recorder := httptest.NewRecorder()
++	handler.ServeHTTP(recorder, request)
++	if recorder.Code != http.StatusCreated {
++		t.Fatalf("admin create status=%d body=%s", recorder.Code, recorder.Body.String())
++	}
++	var created struct {
++		Data struct {
++			ID string `json:"id"`
++		} `json:"data"`
++	}
++	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil || created.Data.ID == "" {
++		t.Fatalf("invalid admin response=%s", recorder.Body.String())
++	}
++	resultBody := []byte(`{"status":"confirmed","txHash":"0xabc"}`)
++	resultReq := httptest.NewRequest(http.MethodPost, "/api/v1/internal/airdrops/"+created.Data.ID+"/result", bytes.NewReader(resultBody))
++	resultReq.Header.Set("Content-Type", "application/json")
++	resultReq.Header.Set("X-Clipli-Executor-Key", "executor-test-key")
++	resultRecorder := httptest.NewRecorder()
++	handler.ServeHTTP(resultRecorder, resultReq)
++	if resultRecorder.Code != http.StatusOK || !bytes.Contains(resultRecorder.Body.Bytes(), []byte(`"status":"confirmed"`)) {
++		t.Fatalf("executor result status=%d body=%s", resultRecorder.Code, resultRecorder.Body.String())
++	}
++}
++
++func TestAdminConsoleRoute(t *testing.T) {
++	handler := testHandler(t)
++	request := httptest.NewRequest(http.MethodGet, "/admin", nil)
++	recorder := httptest.NewRecorder()
++	handler.ServeHTTP(recorder, request)
++	if recorder.Code != http.StatusOK {
++		t.Fatalf("admin page status=%d body=%s", recorder.Code, recorder.Body.String())
++	}
++	if !bytes.Contains(recorder.Body.Bytes(), []byte("Clipli")) || !bytes.Contains(recorder.Body.Bytes(), []byte("admin.js")) {
++		t.Fatalf("admin page does not contain its independent shell: %s", recorder.Body.String())
++	}
++}
++
++func TestBNBAdminSimulation(t *testing.T) {
++	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
++	handler := testHandler(t)
++	address := "0x3333333333333333333333333333333333333333"
++	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/bnb-networks", nil)
++	request.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
++	recorder := httptest.NewRecorder()
++	handler.ServeHTTP(recorder, request)
++	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"chainId":"0x61"`)) || !bytes.Contains(recorder.Body.Bytes(), []byte(`"simulationOnly":true`)) {
++		t.Fatalf("networks status=%d body=%s", recorder.Code, recorder.Body.String())
++	}
++	create := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops", bytes.NewReader([]byte(`{"requestId":"bnb-sim-0001","ruleCode":"admin_approved","walletAddress":"`+address+`","chainId":"0x61","amount":12}`)))
++	create.Header.Set("Content-Type", "application/json")
++	create.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
++	created := httptest.NewRecorder()
++	handler.ServeHTTP(created, create)
++	if created.Code != http.StatusCreated {
++		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
++	}
++	var payload struct {
++		Data struct {
++			ID string `json:"id"`
++		} `json:"data"`
++	}
++	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil || payload.Data.ID == "" {
++		t.Fatalf("create payload=%s", created.Body.String())
++	}
++	simulate := httptest.NewRequest(http.MethodPost, "/api/v1/admin/airdrops/"+payload.Data.ID+"/simulate", bytes.NewReader([]byte(`{"chainId":"0x61"}`)))
++	simulate.Header.Set("Content-Type", "application/json")
++	simulate.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
++	simulated := httptest.NewRecorder()
++	handler.ServeHTTP(simulated, simulate)
++	if simulated.Code != http.StatusOK || !bytes.Contains(simulated.Body.Bytes(), []byte(`"simulated":true`)) || !bytes.Contains(simulated.Body.Bytes(), []byte(`"executionMode":"simulated-bnb"`)) {
++		t.Fatalf("simulate status=%d body=%s", simulated.Code, simulated.Body.String())
++	}
++}
++
+ func doJSONRequest(t *testing.T, handler http.Handler, method, route string, payload any) (int, json.RawMessage) {
+ 	t.Helper()
+ 	var body *bytes.Reader
+diff --git a/internal/service/service.go b/internal/service/service.go
+index 7f00e99..e952550 100644
+--- a/internal/service/service.go
++++ b/internal/service/service.go
+@@ -271,6 +271,71 @@ type RedemptionInput struct {
+ 	Accepted  bool   `json:"accepted"`
+ }
+ 
++type WalletConnectInput struct {
++	Provider string `json:"provider"`
++	Address  string `json:"address"`
++	ChainID  string `json:"chainId"`
++}
++
++type AirdropInput struct {
++	RequestID     string `json:"requestId"`
++	RuleCode      string `json:"ruleCode"`
++	WalletAddress string `json:"walletAddress"`
++	ChainID       string `json:"chainId"`
++	AssetID       string `json:"assetId"`
++	Amount        int    `json:"amount"`
++	Token         string `json:"token"`
++}
++
++type AirdropResultInput struct {
++	Status        string `json:"status"`
++	TxHash        string `json:"txHash"`
++	ExecutorRef   string `json:"executorRef"`
++	FailureReason string `json:"failureReason"`
++}
++
++// BNBChainConfig describes the networks accepted by the Clipli airdrop
++// workflow while the BEP-20 contract is still being prepared.
++type BNBChainConfig struct {
++	ChainID          string `json:"chainId"`
++	Name             string `json:"name"`
++	Network          string `json:"network"`
++	NativeCurrency   string `json:"nativeCurrency"`
++	ContractDeployed bool   `json:"contractDeployed"`
++	SimulationOnly   bool   `json:"simulationOnly"`
++}
++
++func BNBChainConfigs() []BNBChainConfig {
++	return []BNBChainConfig{
++		{ChainID: "0x61", Name: "BNB Smart Chain Testnet", Network: "testnet", NativeCurrency: "tBNB", ContractDeployed: false, SimulationOnly: true},
++		{ChainID: "0x38", Name: "BNB Smart Chain Mainnet", Network: "mainnet", NativeCurrency: "BNB", ContractDeployed: false, SimulationOnly: true},
++	}
++}
++
++func NormalizeBNBChain(chainID string) string {
++	switch strings.ToLower(strings.TrimSpace(chainID)) {
++	case "0x61", "97":
++		return "0x61"
++	case "0x38", "56":
++		return "0x38"
++	default:
++		return ""
++	}
++}
++
++func IsBNBChain(chainID string) bool { return NormalizeBNBChain(chainID) != "" }
++
++type AirdropEligibility struct {
++	Eligible      bool   `json:"eligible"`
++	RuleCode      string `json:"ruleCode"`
++	WalletAddress string `json:"walletAddress"`
++	AssetID       string `json:"assetId,omitempty"`
++	Amount        int    `json:"amount"`
++	Token         string `json:"token"`
++	Reason        string `json:"reason"`
++	ExistingID    string `json:"existingAirdropId,omitempty"`
++}
++
+ type RedemptionResult struct {
+ 	Redemption        domain.HAPWRedemption    `json:"redemption"`
+ 	GenerationAccount domain.GenerationAccount `json:"generationAccount"`
+@@ -314,6 +379,9 @@ func (s *Service) Redeem(input RedemptionInput) (RedemptionResult, bool, error)
+ 		asset.RedemptionStatus, asset.Transferable, asset.ExchangeAvailable = "redeemed", false, false
+ 		asset.Status, asset.StatusEn, asset.StatusKo = "已核销", "Redeemed", "상각 완료"
+ 		state.Redemptions = prepend(redemption, state.Redemptions)
++		if validWalletAddress(state.Profile.Wallet) {
++			queueRedemptionAirdrop(state, redemption, state.Profile.Wallet, state.Profile.WalletChainID, now)
++		}
+ 		state.CLIPTransactions = prepend(domain.CLIPTransaction{
+ 			ID: uniqueID("clip-grant", now), TypeCode: "redemptionGrant", Type: "HAPW 核销领取", TypeEn: "HAPW redemption grant", TypeKo: "HAPW 상각 지급", Amount: grant,
+ 			Counterparty: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameEn), CounterpartyKo: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameKo),
+@@ -542,20 +610,316 @@ func (s *Service) Exchange(input ExchangeInput) (ExchangeResult, bool, error) {
+ 	return result, idempotent, err
+ }
+ 
+-func (s *Service) ConnectWallet(provider string) (domain.Profile, error) {
++func (s *Service) ConnectWallet(input WalletConnectInput) (domain.Profile, error) {
+ 	allowed := map[string]bool{"MetaMask": true, "Coinbase Wallet": true, "WalletConnect": true, "Venly": true}
+-	if !allowed[provider] {
++	if !allowed[input.Provider] {
+ 		return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_provider", "Unsupported wallet provider")
+ 	}
++	address := normalizeWalletAddress(input.Address)
++	if address == "" {
++		var profile domain.Profile
++		err := s.store.Update(func(state *store.State) error {
++			state.Profile.WalletProvider = input.Provider
++			state.Profile.WalletStatus = "provider-selected"
++			profile = state.Profile
++			return nil
++		})
++		return profile, err
++	}
++	if !validWalletAddress(address) {
++		return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
++	}
++	chainID := NormalizeBNBChain(input.ChainID)
++	if chainID == "" {
++		return domain.Profile{}, apiError(http.StatusBadRequest, "unsupported_chain", "Clipli wallet operations currently support BNB Smart Chain Testnet (0x61) and Mainnet (0x38)")
++	}
+ 	var profile domain.Profile
+ 	err := s.store.Update(func(state *store.State) error {
+-		state.Profile.WalletProvider, state.Profile.Wallet = provider, "0x7E…4A91"
++		now := s.now().UTC().Format(time.RFC3339)
++		state.Profile.WalletProvider, state.Profile.Wallet = input.Provider, address
++		state.Profile.WalletChainID, state.Profile.WalletStatus, state.Profile.WalletConnectedAt = chainID, "connected", now
+ 		profile = state.Profile
+ 		return nil
+ 	})
+ 	return profile, err
+ }
+ 
++func (s *Service) DisconnectWallet() domain.Profile {
++	var profile domain.Profile
++	_ = s.store.Update(func(state *store.State) error {
++		state.Profile.Wallet, state.Profile.WalletProvider, state.Profile.WalletChainID = "", "", ""
++		state.Profile.WalletStatus, state.Profile.WalletConnectedAt = "disconnected", ""
++		profile = state.Profile
++		return nil
++	})
++	return profile
++}
++
++func (s *Service) WalletAssets(address string) ([]domain.WalletAsset, error) {
++	address = normalizeWalletAddress(address)
++	if !validWalletAddress(address) {
++		return nil, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
++	}
++	state := s.Snapshot()
++	items := make([]domain.WalletAsset, 0)
++	seen := map[string]bool{}
++	for _, item := range state.WalletAssets {
++		if strings.EqualFold(item.WalletAddress, address) {
++			items = append(items, item)
++			seen[item.AssetID] = true
++		}
++	}
++	for _, asset := range state.Assets {
++		if !strings.EqualFold(asset.Owner, address) || seen[asset.ID] {
++			continue
++		}
++		items = append(items, walletAssetFromHAPW(asset, address))
++	}
++	return items, nil
++}
++
++func (s *Service) AirdropRules() []domain.AirdropRule {
++	return s.Snapshot().AirdropRules
++}
++
++func (s *Service) Airdrops(address, status string) ([]domain.AirdropRecord, error) {
++	if address != "" {
++		address = normalizeWalletAddress(address)
++		if !validWalletAddress(address) {
++			return nil, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
++		}
++	}
++	state := s.Snapshot()
++	items := make([]domain.AirdropRecord, 0)
++	for _, item := range state.Airdrops {
++		if address != "" && !strings.EqualFold(item.WalletAddress, address) {
++			continue
++		}
++		if status != "" && item.Status != status {
++			continue
++		}
++		items = append(items, item)
++	}
++	return items, nil
++}
++
++func (s *Service) AirdropEligibility(ruleCode, address, assetID string) (AirdropEligibility, error) {
++	address = normalizeWalletAddress(address)
++	if !validWalletAddress(address) {
++		return AirdropEligibility{}, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
++	}
++	state := s.Snapshot()
++	rule, ok := findAirdropRule(state.AirdropRules, ruleCode)
++	if !ok || !rule.Enabled {
++		return AirdropEligibility{RuleCode: ruleCode, WalletAddress: address, Token: "CLIP", Reason: "airdrop_rule_disabled"}, nil
++	}
++	eligibility := AirdropEligibility{RuleCode: rule.Code, WalletAddress: address, AssetID: assetID, Token: rule.Token, Reason: "eligible"}
++	if rule.Code == "hapw_redemption" {
++		for _, redemption := range state.Redemptions {
++			if redemption.AssetID == assetID {
++				eligibility.Amount = redemption.ClipGranted
++				for _, existing := range state.Airdrops {
++					if existing.RuleCode == rule.Code && existing.AssetID == assetID && strings.EqualFold(existing.WalletAddress, address) && existing.Status != "failed" {
++						eligibility.ExistingID = existing.ID
++						eligibility.Reason = "airdrop_already_created"
++						return eligibility, nil
++					}
++				}
++				eligibility.Eligible = true
++				return eligibility, nil
++			}
++		}
++		eligibility.Reason = "hapw_redemption_required"
++		return eligibility, nil
++	}
++	eligibility.Reason = "rule_requires_manual_amount"
++	return eligibility, nil
++}
++
++func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool, error) {
++	var result domain.AirdropRecord
++	idempotent := false
++	address := normalizeWalletAddress(input.WalletAddress)
++	if !validWalletAddress(address) {
++		return result, false, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
++	}
++	if !validRequestID(input.RequestID) {
++		return result, false, apiError(http.StatusBadRequest, "invalid_request_id", "A valid operation id is required")
++	}
++	chainID := NormalizeBNBChain(input.ChainID)
++	if chainID == "" {
++		return result, false, apiError(http.StatusBadRequest, "unsupported_chain", "Airdrops are currently limited to BNB Smart Chain Testnet (0x61) and Mainnet (0x38)")
++	}
++	err := s.store.Update(func(state *store.State) error {
++		for _, item := range state.Airdrops {
++			if item.RequestID == input.RequestID {
++				result, idempotent = item, true
++				return nil
++			}
++		}
++		rule, ok := findAirdropRule(state.AirdropRules, input.RuleCode)
++		if !ok || !rule.Enabled {
++			return apiError(http.StatusBadRequest, "airdrop_rule_disabled", "The airdrop rule is unavailable")
++		}
++		amount := input.Amount
++		allocationSource := "treasury-reservation"
++		if rule.Code == "hapw_redemption" {
++			allocationSource = "redemption-entitlement"
++			amount = 0
++			for _, redemption := range state.Redemptions {
++				if redemption.AssetID == input.AssetID {
++					amount = redemption.ClipGranted
++					break
++				}
++			}
++			if amount <= 0 {
++				return apiError(http.StatusBadRequest, "hapw_redemption_required", "The wallet is not eligible until the HAPW is redeemed")
++			}
++		}
++		if amount <= 0 || amount > 1000000000 {
++			return apiError(http.StatusBadRequest, "invalid_airdrop_amount", "A positive airdrop amount is required")
++		}
++		if allocationSource == "treasury-reservation" {
++			if state.CLIPTreasury.TreasuryBalance < amount {
++				return apiError(http.StatusServiceUnavailable, "clip_treasury_insufficient", "The platform treasury cannot reserve this airdrop")
++			}
++			state.CLIPTreasury.TreasuryBalance -= amount
++			state.CLIPTreasury.LedgerOutstanding += amount
++			state.CLIPTreasury.TotalDistributed += amount
++		}
++		now := s.now().UTC().Format(time.RFC3339)
++		token := input.Token
++		if token == "" {
++			token = rule.Token
++		}
++		result = domain.AirdropRecord{ID: uniqueID("airdrop", s.now()), RequestID: input.RequestID, RuleCode: rule.Code, WalletAddress: address, ChainID: chainID, AssetID: input.AssetID, Token: token, Amount: amount, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: allocationSource, CreatedAt: now, UpdatedAt: now}
++		state.Airdrops = prepend(result, state.Airdrops)
++		return nil
++	})
++	return result, idempotent, err
++}
++
++// SimulateAirdrop exercises the queued/confirmed state transition without
++// broadcasting a blockchain transaction. The receipt is deliberately not a
++// 0x hash so it cannot be mistaken for an on-chain transaction.
++func (s *Service) SimulateAirdrop(id, chainID string) (domain.AirdropRecord, error) {
++	var result domain.AirdropRecord
++	chainID = NormalizeBNBChain(chainID)
++	if chainID == "" {
++		return result, apiError(http.StatusBadRequest, "unsupported_chain", "Choose BNB Smart Chain Testnet (0x61) or Mainnet (0x38)")
++	}
++	err := s.store.Update(func(state *store.State) error {
++		index := -1
++		for i := range state.Airdrops {
++			if state.Airdrops[i].ID == id {
++				index = i
++				break
++			}
++		}
++		if index < 0 {
++			return apiError(http.StatusNotFound, "airdrop_not_found", "Airdrop record not found")
++		}
++		item := &state.Airdrops[index]
++		if item.Status == "failed" {
++			return apiError(http.StatusConflict, "airdrop_failed", "A failed airdrop must be recreated before simulation")
++		}
++		if item.Status == "confirmed" && item.Simulated {
++			result = *item
++			return nil
++		}
++		if item.Status == "confirmed" && !item.Simulated {
++			return apiError(http.StatusConflict, "airdrop_already_confirmed", "A confirmed external transaction cannot be simulated")
++		}
++		now := s.now().UTC().Format(time.RFC3339)
++		item.Status = "confirmed"
++		item.ChainID = chainID
++		item.Network = chainID
++		item.Simulated = true
++		item.ExecutionMode = "simulated-bnb"
++		item.ExecutorRef = "clipli-simulator"
++		item.TxHash = "sim-bnb-" + item.ID
++		item.FailureReason = ""
++		item.UpdatedAt = now
++		result = *item
++		return nil
++	})
++	return result, err
++}
++
++func (s *Service) UpdateAirdrop(id string, input AirdropResultInput) (domain.AirdropRecord, error) {
++	var result domain.AirdropRecord
++	err := s.store.Update(func(state *store.State) error {
++		index := -1
++		for i := range state.Airdrops {
++			if state.Airdrops[i].ID == id {
++				index = i
++				break
++			}
++		}
++		if index < 0 {
++			return apiError(http.StatusNotFound, "airdrop_not_found", "Airdrop record not found")
++		}
++		if input.Status != "submitted" && input.Status != "confirmed" && input.Status != "failed" {
++			return apiError(http.StatusBadRequest, "invalid_airdrop_status", "Airdrop status must be submitted, confirmed, or failed")
++		}
++		item := &state.Airdrops[index]
++		if item.Status == "confirmed" {
++			result = *item
++			return nil
++		}
++		if input.Status == "failed" && item.Status != "failed" && item.AllocationSource == "treasury-reservation" {
++			state.CLIPTreasury.TreasuryBalance += item.Amount
++			state.CLIPTreasury.LedgerOutstanding -= item.Amount
++			if state.CLIPTreasury.LedgerOutstanding < 0 {
++				state.CLIPTreasury.LedgerOutstanding = 0
++			}
++			state.CLIPTreasury.TotalDistributed -= item.Amount
++		}
++		item.Status, item.TxHash, item.ExecutorRef, item.FailureReason = input.Status, input.TxHash, input.ExecutorRef, input.FailureReason
++		item.UpdatedAt = s.now().UTC().Format(time.RFC3339)
++		result = *item
++		return nil
++	})
++	return result, err
++}
++
++func queueRedemptionAirdrop(state *store.State, redemption domain.HAPWRedemption, address, chainID string, now time.Time) {
++	for _, item := range state.Airdrops {
++		if item.RuleCode == "hapw_redemption" && item.AssetID == redemption.AssetID && strings.EqualFold(item.WalletAddress, address) && item.Status != "failed" {
++			return
++		}
++	}
++	createdAt := now.UTC().Format(time.RFC3339)
++	state.Airdrops = prepend(domain.AirdropRecord{ID: uniqueID("airdrop", now), RequestID: "airdrop-" + redemption.RequestID, RuleCode: "hapw_redemption", WalletAddress: address, ChainID: chainID, AssetID: redemption.AssetID, Token: "CLIP", Amount: redemption.ClipGranted, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: "redemption-entitlement", CreatedAt: createdAt, UpdatedAt: createdAt}, state.Airdrops)
++}
++
++func walletAssetFromHAPW(asset domain.HAPWAsset, address string) domain.WalletAsset {
++	return domain.WalletAsset{ID: "wallet-asset-" + asset.ID, WalletAddress: address, AssetID: asset.ID, TokenID: asset.TokenID, Name: asset.Name, Balance: "1", Standard: asset.Provenance.TokenStandard, SourceCode: asset.External.ProviderCode, ExternalAssetID: asset.External.ProviderAssetID, ExternalURL: asset.External.AssetURL, SyncStatus: asset.External.SyncStatus, LastSyncedAt: asset.External.LastSyncedAt, RedemptionStatus: asset.RedemptionStatus, CanRedeem: asset.RedemptionStatus == "available", CanExercise: asset.Transferable}
++}
++
++func findAirdropRule(rules []domain.AirdropRule, code string) (domain.AirdropRule, bool) {
++	for _, rule := range rules {
++		if rule.Code == code {
++			return rule, true
++		}
++	}
++	return domain.AirdropRule{}, false
++}
++
++func normalizeWalletAddress(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
++
++func validWalletAddress(value string) bool {
++	if len(value) != 42 || !strings.HasPrefix(value, "0x") {
++		return false
++	}
++	for _, char := range value[2:] {
++		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
++			return false
++		}
++	}
++	return true
++}
++
+ func (s *Service) SetOverseasAccount(account string) (domain.Profile, error) {
+ 	account = strings.TrimSpace(account)
+ 	if len(account) < 4 || len(account) > 64 {
+diff --git a/internal/service/service_test.go b/internal/service/service_test.go
+index b540562..3ff362e 100644
+--- a/internal/service/service_test.go
++++ b/internal/service/service_test.go
+@@ -81,3 +81,64 @@ func TestListAssetsFiltersAndPaginates(t *testing.T) {
+ 		t.Fatalf("first asset = %s", result.Items[0].ID)
+ 	}
+ }
++
++func TestWalletConnectionAndAssetSnapshot(t *testing.T) {
++	service := newTestService()
++	address := "0x1111111111111111111111111111111111111111"
++	profile, err := service.ConnectWallet(WalletConnectInput{Provider: "MetaMask", Address: address, ChainID: "0x61"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if profile.Wallet != address || profile.WalletStatus != "connected" || profile.WalletChainID != "0x61" {
++		t.Fatalf("profile = %#v", profile)
++	}
++	assets, err := service.WalletAssets(address)
++	if err != nil || len(assets) != 1 || assets[0].AssetID != "asset-2048" || !assets[0].CanRedeem {
++		t.Fatalf("wallet assets = %#v err=%v", assets, err)
++	}
++}
++
++func TestRedemptionQueuesWalletAirdrop(t *testing.T) {
++	service := newTestService()
++	address := "0x1111111111111111111111111111111111111111"
++	if _, err := service.ConnectWallet(WalletConnectInput{Provider: "MetaMask", Address: address, ChainID: "0x61"}); err != nil {
++		t.Fatal(err)
++	}
++	result, _, err := service.Redeem(RedemptionInput{RequestID: "airdrop-redeem-2048", AssetID: "asset-2048", Accepted: true})
++	if err != nil {
++		t.Fatal(err)
++	}
++	items, err := service.Airdrops(address, "queued")
++	if err != nil || len(items) != 1 {
++		t.Fatalf("airdrops = %#v err=%v", items, err)
++	}
++	if items[0].AssetID != result.Redemption.AssetID || items[0].Amount != result.Redemption.ClipGranted || items[0].AllocationSource != "redemption-entitlement" {
++		t.Fatalf("airdrop = %#v", items[0])
++	}
++	eligibility, err := service.AirdropEligibility("hapw_redemption", address, "asset-2048")
++	if err != nil || eligibility.Eligible || eligibility.Reason != "airdrop_already_created" {
++		t.Fatalf("eligibility = %#v err=%v", eligibility, err)
++	}
++}
++
++func TestAdminAirdropReservesAndRefundsTreasury(t *testing.T) {
++	service := newTestService()
++	address := "0x2222222222222222222222222222222222222222"
++	before := service.Snapshot().CLIPTreasury
++	item, idempotent, err := service.CreateAirdrop(AirdropInput{RequestID: "manual-airdrop-1", RuleCode: "admin_approved", WalletAddress: address, ChainID: "0x61", Amount: 25})
++	if err != nil || idempotent || item.Status != "queued" || item.Amount != 25 || item.AllocationSource != "treasury-reservation" {
++		t.Fatalf("item=%#v idempotent=%v err=%v", item, idempotent, err)
++	}
++	afterQueue := service.Snapshot().CLIPTreasury
++	if afterQueue.TreasuryBalance != before.TreasuryBalance-25 || afterQueue.LedgerOutstanding != before.LedgerOutstanding+25 {
++		t.Fatalf("treasury after queue before=%#v after=%#v", before, afterQueue)
++	}
++	updated, err := service.UpdateAirdrop(item.ID, AirdropResultInput{Status: "failed", FailureReason: "executor rejected"})
++	if err != nil || updated.Status != "failed" {
++		t.Fatalf("updated=%#v err=%v", updated, err)
++	}
++	afterFailure := service.Snapshot().CLIPTreasury
++	if afterFailure.TreasuryBalance != before.TreasuryBalance || afterFailure.LedgerOutstanding != before.LedgerOutstanding {
++		t.Fatalf("treasury was not refunded: before=%#v after=%#v", before, afterFailure)
++	}
++}
+diff --git a/internal/store/memory.go b/internal/store/memory.go
+index ba6c360..a9c1d4e 100644
+--- a/internal/store/memory.go
++++ b/internal/store/memory.go
+@@ -24,6 +24,9 @@ type State struct {
+ 	CLIPTreasury      domain.CLIPTreasury
+ 	DistributionRules []domain.CLIPDistributionRule
+ 	Distributions     []domain.CLIPDistribution
++	WalletAssets      []domain.WalletAsset
++	AirdropRules      []domain.AirdropRule
++	Airdrops          []domain.AirdropRecord
+ 	Session           domain.SessionPolicy
+ }
+ 
+@@ -68,5 +71,8 @@ func cloneState(state State) State {
+ 	clone.AssetSyncRuns = append([]domain.AssetSyncRun(nil), state.AssetSyncRuns...)
+ 	clone.DistributionRules = append([]domain.CLIPDistributionRule(nil), state.DistributionRules...)
+ 	clone.Distributions = append([]domain.CLIPDistribution(nil), state.Distributions...)
++	clone.WalletAssets = append([]domain.WalletAsset(nil), state.WalletAssets...)
++	clone.AirdropRules = append([]domain.AirdropRule(nil), state.AirdropRules...)
++	clone.Airdrops = append([]domain.AirdropRecord(nil), state.Airdrops...)
+ 	return clone
+ }
+diff --git a/internal/store/seed.go b/internal/store/seed.go
+index 3b93466..c847922 100644
+--- a/internal/store/seed.go
++++ b/internal/store/seed.go
+@@ -106,7 +106,14 @@ func SeedState() State {
+ 			{Code: "hapw_redemption", Trigger: "successful_hapw_redemption", Formula: "floor(creditYield * 0.40)", Rate: 0.4, Description: "HAPW 核销成功后由平台金库一次性划拨", Enabled: true},
+ 		},
+ 		Distributions: []domain.CLIPDistribution{{ID: "distribution-903", RequestID: "seed-redeem-903", RuleCode: "hapw_redemption", UserRef: "anonymous-demo", AssetID: "asset-903", Amount: 48, UserBalanceBefore: 3412, UserBalanceAfter: 3460, TreasuryBefore: 9746588, TreasuryAfter: 9746540, Status: "completed", CreatedAt: "2026-08-06 09:30"}},
+-		Session:       domain.SessionPolicy{Mode: "anonymous-demo", UserRef: "anonymous-demo", IdentityVerification: false, KYCRequired: false, WalletOptional: true, Persistence: "process-memory", Notice: "No real identity verification; wallet connection is an optional operation handle."},
++		AirdropRules: []domain.AirdropRule{
++			{Code: "hapw_redemption", Name: "HAPW 核销空投", Trigger: "successful_hapw_redemption", Formula: "floor(creditYield * 0.40)", Token: "CLIP", Enabled: true, RequiresWallet: true, Description: "HAPW 核销成功且绑定钱包后，按核销额度向该钱包创建 CLIP 空投任务"},
++			{Code: "admin_approved", Name: "指定钱包空投", Trigger: "admin_approved", Formula: "amount", Token: "CLIP", Enabled: true, RequiresWallet: true, Description: "管理员确认后，按指定数量从平台金库创建 CLIP 空投任务"},
++		},
++		WalletAssets: []domain.WalletAsset{
++			{ID: "wallet-asset-demo-2048", WalletAddress: "0x1111111111111111111111111111111111111111", AssetID: "asset-2048", TokenID: "#2048", Name: "海风计划", Balance: "1", Standard: "HAPW-1", SourceCode: "haiwen", ExternalAssetID: "HWF-HAPW-2048", ExternalURL: "https://hnccc.hzbcm.com/", SyncStatus: "synced", LastSyncedAt: "2026-08-18T08:30:00Z", RedemptionStatus: "available", CanRedeem: true, CanExercise: true},
++		},
++		Session: domain.SessionPolicy{Mode: "anonymous-demo", UserRef: "anonymous-demo", IdentityVerification: false, KYCRequired: false, WalletOptional: true, Persistence: "process-memory", Notice: "No real identity verification; wallet connection is an optional operation handle."},
+ 	}
+ }
+ 
+diff --git a/public/admin.css b/public/admin.css
+new file mode 100644
+index 0000000..2480a01
+--- /dev/null
++++ b/public/admin.css
+@@ -0,0 +1,119 @@
++:root {
++  color-scheme: dark;
++  --bg: #0e0c15;
++  --surface: #16141f;
++  --surface-strong: #1e1b29;
++  --surface-hover: #272332;
++  --line: #302b3c;
++  --line-strong: #423c52;
++  --text: #ebeaeF;
++  --muted: #9e9aa8;
++  --accent: #bdb3d6;
++  --accent-dark: #8a7cb8;
++  --success: #93b39b;
++  --warning: #d3ba83;
++  --danger: #d19891;
++  --shadow: 0 8px 24px rgba(14, 12, 21, .32);
++  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
++  font-synthesis: none;
++}
++
++* { box-sizing: border-box; }
++body { margin: 0; min-width: 320px; background: var(--bg); color: var(--text); }
++button, input, select { font: inherit; }
++button { cursor: pointer; }
++a { color: inherit; }
++
++.admin-nav { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 0 32px; border-bottom: 1px solid var(--line); background: #0e0c15; }
++.admin-brand { display: inline-flex; align-items: center; gap: 11px; color: var(--text); text-decoration: none; font-weight: 850; letter-spacing: .02em; }
++.admin-brand small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; letter-spacing: .14em; }
++.brand-mark { width: 30px; height: 30px; display: grid; place-items: center; background: var(--accent); color: #1a1822; font-size: 16px; font-weight: 950; }
++.nav-actions { display: flex; gap: 8px; }
++.ghost-button, .secondary-button, .primary-button { min-height: 38px; border: 1px solid var(--line-strong); padding: 0 14px; font-size: 12px; font-weight: 800; }
++.ghost-button { background: transparent; color: var(--muted); }
++.ghost-button:hover, .secondary-button:hover { background: var(--surface-hover); color: var(--text); }
++.secondary-button { background: var(--surface-strong); color: var(--text); }
++.primary-button { border-color: var(--accent); background: var(--accent); color: #1a1822; }
++.primary-button:hover { background: #d6cfe6; }
++button:disabled { cursor: not-allowed; opacity: .55; }
++
++.admin-main { width: min(1320px, calc(100% - 48px)); margin: 0 auto; padding: 56px 0 80px; }
++.admin-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; padding: 0 0 42px; border-bottom: 1px solid var(--line); }
++.kicker { margin: 0; color: var(--accent); font-size: 10px; font-weight: 900; letter-spacing: .16em; }
++h1, h2, h3, p { margin-top: 0; }
++h1 { max-width: 700px; margin: 12px 0 14px; font-size: clamp(34px, 5vw, 64px); line-height: 1.06; letter-spacing: -.025em; }
++h2 { margin: 5px 0 8px; font-size: 24px; line-height: 1.2; letter-spacing: -.01em; }
++.hero-lead { max-width: 680px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.75; }
++.status-box { display: inline-flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 12px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; white-space: nowrap; }
++.status-dot { width: 7px; height: 7px; background: var(--muted); border-radius: 50%; }
++.status-box.connected { color: var(--success); border-color: #3b5444; }
++.status-box.connected .status-dot { background: var(--success); }
++.status-box.error { color: var(--danger); border-color: #5d3a36; }
++.status-box.error .status-dot { background: var(--danger); }
++
++.admin-panel { margin-top: 28px; padding: 26px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
++.compact-panel { margin-top: 0; }
++.panel-heading { margin-bottom: 22px; }
++.panel-heading p:not(.kicker) { max-width: 720px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
++.split-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
++.security-label { flex: 0 0 auto; padding: 7px 9px; border: 1px solid #3b5444; color: var(--success); font-size: 10px; font-weight: 850; letter-spacing: .08em; }
++.auth-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
++label { display: grid; gap: 7px; min-width: 0; }
++label > span { color: var(--muted); font-size: 11px; font-weight: 750; }
++input, select { width: 100%; min-height: 42px; border: 1px solid var(--line-strong); outline: none; padding: 0 11px; background: #0a0810; color: var(--text); border-radius: 0; }
++input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(189, 179, 214, .2); }
++.inline-feedback { min-height: 19px; margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
++.inline-feedback.success { color: var(--success); }
++.inline-feedback.error { color: var(--danger); }
++
++.stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin-top: 28px; border: 1px solid var(--line); background: var(--line); }
++.stat-card { min-height: 124px; padding: 18px; background: var(--surface); }
++.stat-card small, .stat-card strong, .stat-card span { display: block; }
++.stat-card small { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
++.stat-card strong { margin-top: 13px; font-size: 29px; letter-spacing: -.02em; }
++.stat-card span { margin-top: 6px; color: var(--muted); font-size: 11px; }
++.admin-layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(290px, .75fr); gap: 28px; margin-top: 28px; }
++.main-column { display: grid; gap: 28px; }
++.side-column { display: grid; align-content: start; gap: 28px; }
++.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
++.form-grid .form-actions, .form-grid > button, .form-grid > .wide { grid-column: 1 / -1; }
++.form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
++.eligibility-box { margin-top: 18px; padding: 14px; border-left: 3px solid var(--accent); background: #231f31; color: var(--muted); font-size: 12px; line-height: 1.6; }
++.eligibility-box strong { color: var(--text); }
++.queue-filters { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 20px; }
++.table-wrap { overflow-x: auto; border-top: 1px solid var(--line); }
++table { width: 100%; min-width: 820px; border-collapse: collapse; font-size: 12px; }
++th { padding: 13px 10px; color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
++td { padding: 15px 10px; border-top: 1px solid var(--line); vertical-align: top; }
++td small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
++.queue-simulate { min-height: 30px; padding: 0 9px; font-size: 10px; white-space: nowrap; }
++.table-empty { padding: 28px 10px; color: var(--muted); text-align: center; }
++.status-pill { display: inline-block; padding: 5px 7px; border: 1px solid var(--line-strong); color: var(--muted); font-size: 10px; font-weight: 800; }
++.status-pill.confirmed { color: var(--success); border-color: #3b5444; }
++.status-pill.failed { color: var(--danger); border-color: #5d3a36; }
++.status-pill.queued, .status-pill.submitted { color: var(--warning); border-color: #5a4b2f; }
++.rules-list { border-top: 1px solid var(--line); }
++.rule-row { padding: 14px 0; border-bottom: 1px solid var(--line); }
++.rule-row strong, .rule-row small { display: block; }
++.rule-row small { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
++.rule-code { color: var(--accent); font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
++.rule-meta { display: flex; justify-content: space-between; gap: 10px; margin-top: 9px; color: var(--muted); font-size: 10px; }
++
++@media (max-width: 900px) {
++  .admin-layout { grid-template-columns: 1fr; }
++  .side-column { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
++}
++@media (max-width: 680px) {
++  .admin-nav { padding: 0 18px; }
++  .admin-main { width: min(100% - 28px, 1320px); padding-top: 34px; }
++  .admin-hero { align-items: flex-start; flex-direction: column; padding-bottom: 28px; }
++  h1 { font-size: 40px; }
++  .auth-form, .form-grid, .queue-filters { grid-template-columns: 1fr; }
++  .form-actions { justify-content: stretch; }
++  .form-actions button { flex: 1; }
++  .side-column { grid-template-columns: 1fr; }
++  .admin-panel { padding: 20px 16px; }
++  .split-heading { flex-direction: column; }
++}
++
++@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+diff --git a/public/admin.html b/public/admin.html
+new file mode 100644
+index 0000000..6696eca
+--- /dev/null
++++ b/public/admin.html
+@@ -0,0 +1,77 @@
++<!doctype html>
++<html lang="zh-CN">
++<head>
++  <meta charset="UTF-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1.0">
++  <meta name="robots" content="noindex,nofollow">
++  <title>Clipli · Operations</title>
++  <link rel="stylesheet" href="/admin.css?v=2">
++</head>
++<body>
++  <header class="admin-nav">
++    <a class="admin-brand" href="/" aria-label="Clipli home"><span class="brand-mark">C</span><span>Clipli <small>OPERATIONS</small></span></a>
++    <div class="nav-actions">
++      <button class="ghost-button" id="language-toggle" type="button">EN</button>
++      <button class="ghost-button" id="clear-session" type="button" data-copy="clearSession">清除会话</button>
++    </div>
++  </header>
++
++  <main class="admin-main">
++    <section class="admin-hero">
++      <div>
++        <p class="kicker" data-copy="eyebrow">CLIPLI OPERATIONS</p>
++        <h1 data-copy="title">空投运营后台</h1>
++        <p class="hero-lead" data-copy="lead">管理指定钱包和规则账户的 CLIP 空投任务。实际链上转账由外部执行器完成。</p>
++      </div>
++      <div class="status-box" id="connection-state"><span class="status-dot"></span><span data-copy="notConnected">未连接运营接口</span></div>
++    </section>
++
++    <section class="admin-panel auth-panel" id="auth-panel">
++      <div class="panel-heading">
++        <div><p class="kicker" data-copy="authEyebrow">ACCESS</p><h2 data-copy="authTitle">连接运营接口</h2><p data-copy="authLead">密钥只保存在当前浏览器会话中，不会写入 URL。</p></div>
++      </div>
++      <form id="auth-form" class="auth-form">
++        <label><span data-copy="adminKey">管理员密钥</span><input id="admin-key" type="password" autocomplete="off" placeholder="X-Clipli-Admin-Key"></label>
++        <label><span data-copy="executorKey">执行器回调密钥（可选）</span><input id="executor-key" type="password" autocomplete="off" placeholder="X-Clipli-Executor-Key"></label>
++        <button class="primary-button" type="submit" data-copy="connect">连接</button>
++      </form>
++      <p class="inline-feedback" id="auth-feedback" role="status"></p>
++    </section>
++
++    <div id="dashboard" hidden>
++      <section class="stat-grid" id="stats" aria-live="polite"></section>
++
++      <div class="admin-layout">
++        <div class="main-column">
++          <section class="admin-panel">
++            <div class="panel-heading split-heading"><div><p class="kicker" data-copy="createEyebrow">AIRDROP CONTROL</p><h2 data-copy="createTitle">创建空投任务</h2><p data-copy="createLead">可以按已满足的规则创建，也可以向指定钱包发放 CLIP。</p></div><span class="security-label" data-copy="protected">受保护接口</span></div>
++            <form id="airdrop-form" class="form-grid">
++              <label><span data-copy="rule">空投规则</span><select id="rule-code" required></select></label>
++              <label><span data-copy="wallet">目标钱包地址</span><input id="wallet-address" required spellcheck="false" placeholder="0x…"></label>
++              <label><span data-copy="chain">BNB 网络</span><select id="chain-id" required><option value="0x61">BNB Smart Chain Testnet · tBNB · 模拟</option><option value="0x38">BNB Smart Chain Mainnet · BNB · 模拟</option></select></label>
++              <label id="asset-field"><span data-copy="asset">关联 HAPW（规则空投需要）</span><select id="asset-id"><option value="">加载中…</option></select></label>
++              <label id="amount-field"><span data-copy="amount">空投数量（CLIP）</span><input id="amount" type="number" min="1" step="1" placeholder="25"></label>
++              <label><span data-copy="requestId">请求编号</span><input id="request-id" required spellcheck="false"></label>
++              <div class="form-actions"><button class="secondary-button" id="check-eligibility" type="button" data-copy="check">检查资格</button><button class="primary-button" type="submit" data-copy="queue">创建任务</button></div>
++            </form>
++            <div class="eligibility-box" id="eligibility" hidden></div>
++            <p class="inline-feedback" id="create-feedback" role="status"></p>
++          </section>
++
++          <section class="admin-panel">
++            <div class="panel-heading split-heading"><div><p class="kicker" data-copy="queueEyebrow">EXECUTION QUEUE</p><h2 data-copy="queueTitle">空投任务队列</h2><p data-copy="queueLead">查看已创建任务和外部执行器回写的交易状态。</p></div><button class="secondary-button" id="refresh-queue" type="button" data-copy="refresh">刷新</button></div>
++            <div class="queue-filters"><label><span data-copy="statusFilter">状态</span><select id="status-filter"><option value="" data-copy="allStatuses">全部</option><option value="queued">queued</option><option value="submitted">submitted</option><option value="confirmed">confirmed</option><option value="failed">failed</option></select></label><label><span data-copy="walletFilter">钱包筛选</span><input id="wallet-filter" spellcheck="false" placeholder="0x…"></label><button class="secondary-button" id="filter-queue" type="button" data-copy="filter">筛选</button></div>
++            <div class="table-wrap"><table><thead><tr><th data-copy="tableWallet">钱包</th><th data-copy="tableRule">规则</th><th data-copy="tableAmount">数量</th><th data-copy="tableStatus">状态</th><th data-copy="tableCreated">创建时间</th><th data-copy="tableTx">回执</th><th data-copy="tableAction">操作</th></tr></thead><tbody id="queue-body"><tr><td colspan="7" class="table-empty" data-copy="emptyQueue">暂无空投任务</td></tr></tbody></table></div>
++          </section>
++        </div>
++
++        <aside class="side-column">
++          <section class="admin-panel compact-panel"><div class="panel-heading"><p class="kicker" data-copy="rulesEyebrow">RULES</p><h2 data-copy="rulesTitle">当前规则</h2></div><div id="rules-list" class="rules-list"></div></section>
++          <section class="admin-panel compact-panel"><div class="panel-heading"><p class="kicker" data-copy="executorEyebrow">EXECUTOR</p><h2 data-copy="executorTitle">写入执行结果</h2><p data-copy="executorLead">仅在外部执行器完成广播后回写，不代表后台直接持有私钥。</p></div><form id="result-form" class="form-grid"><label><span data-copy="airdropId">空投 ID</span><input id="result-id" required spellcheck="false" placeholder="airdrop-…"></label><label><span data-copy="resultStatus">结果状态</span><select id="result-status"><option value="submitted">submitted</option><option value="confirmed">confirmed</option><option value="failed">failed</option></select></label><label><span data-copy="txHash">交易哈希</span><input id="tx-hash" spellcheck="false" placeholder="0x…"></label><label><span data-copy="failureReason">失败原因</span><input id="failure-reason"></label><button class="primary-button" type="submit" data-copy="writeResult">写入结果</button></form><p class="inline-feedback" id="result-feedback" role="status"></p></section>
++        </aside>
++      </div>
++    </div>
++  </main>
++  <script src="/admin.js?v=2" defer></script>
++</body>
++</html>
+diff --git a/public/admin.js b/public/admin.js
+new file mode 100644
+index 0000000..4a1212b
+--- /dev/null
++++ b/public/admin.js
+@@ -0,0 +1,195 @@
++(() => {
++  const copy = {
++    zh: {
++      clearSession: "清除会话", eyebrow: "CLIPLI OPERATIONS", title: "空投运营后台", lead: "管理指定钱包和规则账户的 CLIP 空投任务。正式合约上线前可在 BNB 网络上模拟执行。", notConnected: "未连接运营接口", connected: "运营接口已连接", authEyebrow: "ACCESS", authTitle: "连接运营接口", authLead: "密钥只保存在当前浏览器会话中，不会写入 URL。", adminKey: "管理员密钥", executorKey: "执行器回调密钥（可选）", connect: "连接", createEyebrow: "AIRDROP CONTROL", createTitle: "创建空投任务", createLead: "可以按已满足的规则创建，也可以向指定钱包发放 CLIP。", protected: "受保护接口", rule: "空投规则", wallet: "目标钱包地址", chain: "BNB 网络", asset: "关联 HAPW（规则空投需要）", amount: "空投数量（CLIP）", requestId: "请求编号", check: "检查资格", queue: "创建任务", queueEyebrow: "EXECUTION QUEUE", queueTitle: "空投任务队列", queueLead: "查看已创建任务；尚未部署合约时可用模拟执行验证账本流程。", refresh: "刷新", statusFilter: "状态", allStatuses: "全部", walletFilter: "钱包筛选", filter: "筛选", tableWallet: "钱包", tableRule: "规则", tableAmount: "数量", tableStatus: "状态", tableCreated: "创建时间", tableTx: "回执", tableAction: "操作", simulate: "模拟执行", simulated: "模拟回执", emptyQueue: "暂无空投任务", rulesEyebrow: "RULES", rulesTitle: "当前规则", executorEyebrow: "EXECUTOR", executorTitle: "写入执行结果", executorLead: "正式链上广播由外部执行器完成；模拟执行不会访问私钥或发送交易。", airdropId: "空投 ID", resultStatus: "结果状态", txHash: "交易哈希", failureReason: "失败原因", writeResult: "写入结果", loading: "加载中…", noRules: "暂无可用规则", noAssets: "暂无 HAPW 资产", eligible: "满足资格", notEligible: "暂不满足", queued: "任务已创建", resultWritten: "执行结果已写入", invalidKey: "密钥无效或后台未配置，请检查服务端环境变量。", required: "请完整填写必填项。", publicExecutor: "执行器未配置或密钥无效。", treasury: "金库可分发", outstanding: "账本待结算", queuedCount: "排队任务", confirmedCount: "已确认", minted: "一次性铸造总量", source: "来源", manualRule: "管理员指定", redemptionRule: "HAPW 核销", noTx: "等待执行器", checkFailed: "资格检查失败", createFailed: "创建失败", refreshFailed: "刷新失败", updated: "已更新", statusFailed: "结果写入失败", simulationFailed: "模拟执行失败", simulationNote: "当前仅更新平台账本，不产生链上交易。"
++    },
++    en: {
++      clearSession: "Clear session", eyebrow: "CLIPLI OPERATIONS", title: "Airdrop operations", lead: "Manage CLIP airdrops for specified wallets and rule-qualified accounts. Simulate BNB execution until the contract is deployed.", notConnected: "Operator API not connected", connected: "Operator API connected", authEyebrow: "ACCESS", authTitle: "Connect operator API", authLead: "Keys stay in this browser session and never enter the URL.", adminKey: "Admin key", executorKey: "Executor callback key (optional)", connect: "Connect", createEyebrow: "AIRDROP CONTROL", createTitle: "Create an airdrop", createLead: "Create a rule-qualified task or send CLIP to a specified wallet.", protected: "Protected API", rule: "Airdrop rule", wallet: "Target wallet", chain: "BNB network", asset: "Linked HAPW (required by rule)", amount: "Amount (CLIP)", requestId: "Request ID", check: "Check eligibility", queue: "Create task", queueEyebrow: "EXECUTION QUEUE", queueTitle: "Airdrop queue", queueLead: "Review tasks and executor status; simulation validates the ledger flow before contract deployment.", refresh: "Refresh", statusFilter: "Status", allStatuses: "All", walletFilter: "Wallet filter", filter: "Filter", tableWallet: "Wallet", tableRule: "Rule", tableAmount: "Amount", tableStatus: "Status", tableCreated: "Created", tableTx: "Receipt", tableAction: "Action", simulate: "Simulate", simulated: "Simulated receipt", emptyQueue: "No airdrop tasks", rulesEyebrow: "RULES", rulesTitle: "Active rules", executorEyebrow: "EXECUTOR", executorTitle: "Write execution result", executorLead: "Write back only after the external executor broadcasts; simulation never accesses a private key.", airdropId: "Airdrop ID", resultStatus: "Result status", txHash: "Transaction hash", failureReason: "Failure reason", writeResult: "Write result", loading: "Loading…", noRules: "No rules available", noAssets: "No HAPW assets", eligible: "Eligible", notEligible: "Not eligible", queued: "Airdrop queued", resultWritten: "Execution result written", invalidKey: "Invalid key or backend is not configured. Check the server environment.", required: "Complete all required fields.", publicExecutor: "Executor is not configured or the key is invalid.", treasury: "Treasury available", outstanding: "Ledger outstanding", queuedCount: "Queued", confirmedCount: "Confirmed", minted: "One-time minted supply", source: "Source", manualRule: "Admin specified", redemptionRule: "HAPW redemption", noTx: "Awaiting executor", checkFailed: "Eligibility check failed", createFailed: "Creation failed", refreshFailed: "Refresh failed", updated: "Updated", statusFailed: "Result update failed", simulationFailed: "Simulation failed", simulationNote: "This updates the platform ledger only; no blockchain transaction is created."
++    }
++  };
++  const state = { lang: sessionStorage.getItem("clipli-admin-lang") || "zh", key: sessionStorage.getItem("clipli-admin-key") || "", executorKey: sessionStorage.getItem("clipli-executor-key") || "", rules: [], assets: [], queue: [] };
++  const $ = (id) => document.getElementById(id);
++  const text = (key) => (copy[state.lang] && copy[state.lang][key]) || copy.zh[key] || key;
++  const escapeHTML = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[char]));
++  const shortAddress = (value) => value && value.length > 14 ? value.slice(0, 8) + "…" + value.slice(-6) : value || "-";
++  const setFeedback = (id, message, kind = "") => { const node = $(id); if (!node) return; node.textContent = message || ""; node.className = "inline-feedback" + (kind ? " " + kind : ""); };
++
++  function applyCopy() {
++    document.documentElement.lang = state.lang === "en" ? "en" : "zh-CN";
++    document.querySelectorAll("[data-copy]").forEach(node => { node.textContent = text(node.dataset.copy); });
++    $("language-toggle").textContent = state.lang === "zh" ? "EN" : "中文";
++  }
++
++  async function request(path, options = {}, auth = "admin") {
++    const headers = Object.assign({ "Accept": "application/json" }, options.headers || {});
++    if (options.body) headers["Content-Type"] = "application/json";
++    if (auth === "admin" && state.key) headers["X-Clipli-Admin-Key"] = state.key;
++    if (auth === "executor" && state.executorKey) headers["X-Clipli-Executor-Key"] = state.executorKey;
++    const response = await fetch(path, Object.assign({}, options, { headers }));
++    const payload = await response.json().catch(() => ({}));
++    if (!response.ok) {
++      const error = payload.error || {};
++      const err = new Error(error.message || "Request failed");
++      err.code = error.code || "request_failed";
++      err.status = response.status;
++      throw err;
++    }
++    return payload.data;
++  }
++
++  function setConnection(connected, message, error = false) {
++    const node = $("connection-state");
++    node.className = "status-box" + (connected ? " connected" : error ? " error" : "");
++    node.innerHTML = '<span class="status-dot"></span><span>' + escapeHTML(message) + '</span>';
++  }
++
++  function renderStats(treasury, queue) {
++    const queued = queue.filter(item => item.status === "queued" || item.status === "submitted").length;
++    const confirmed = queue.filter(item => item.status === "confirmed").length;
++    $("stats").innerHTML = [
++      [text("treasury"), treasury.treasuryBalance, "CLIP"],
++      [text("outstanding"), treasury.ledgerOutstanding, "CLIP"],
++      [text("queuedCount"), queued, text("source")],
++      [text("confirmedCount"), confirmed, text("source")],
++      [text("minted"), treasury.mintedSupply, "CLIP"]
++    ].map(item => '<article class="stat-card"><small>' + escapeHTML(item[0]) + '</small><strong>' + Number(item[1] || 0).toLocaleString() + '</strong><span>' + escapeHTML(item[2]) + '</span></article>').join("");
++    $("stats").style.gridTemplateColumns = "repeat(" + Math.min(5, Math.max(1, 5)) + ", minmax(0, 1fr))";
++  }
++
++  function renderRules() {
++    $("rules-list").innerHTML = state.rules.length ? state.rules.map(rule => '<article class="rule-row"><span class="rule-code">' + escapeHTML(rule.code) + '</span><strong>' + escapeHTML(rule.name) + '</strong><small>' + escapeHTML(rule.description) + '</small><div class="rule-meta"><span>' + escapeHTML(rule.formula) + '</span><span>' + (rule.code === "admin_approved" ? text("manualRule") : text("redemptionRule")) + '</span></div></article>').join("") : '<p class="inline-feedback">' + text("noRules") + '</p>';
++    $("rule-code").innerHTML = state.rules.map(rule => '<option value="' + escapeHTML(rule.code) + '">' + escapeHTML(rule.code) + ' · ' + escapeHTML(rule.name) + '</option>').join("");
++    updateRuleFields();
++  }
++
++  function renderAssets() {
++    $("asset-id").innerHTML = '<option value="">' + escapeHTML(text("noAssets")) + '</option>' + state.assets.map(asset => '<option value="' + escapeHTML(asset.id) + '">' + escapeHTML(asset.tokenId) + ' · ' + escapeHTML(asset.name) + ' · ' + escapeHTML(asset.redemptionStatus) + '</option>').join("");
++  }
++
++  function renderQueue() {
++    const body = $("queue-body");
++    if (!state.queue.length) { body.innerHTML = '<tr><td colspan="7" class="table-empty">' + text("emptyQueue") + '</td></tr>'; return; }
++    body.innerHTML = state.queue.map(item => '<tr><td><strong title="' + escapeHTML(item.walletAddress) + '">' + escapeHTML(shortAddress(item.walletAddress)) + '</strong><small>' + escapeHTML(item.chainId) + '</small></td><td>' + escapeHTML(item.ruleCode) + '<small>' + escapeHTML(item.assetId || "-") + '</small></td><td><strong>' + Number(item.amount || 0).toLocaleString() + ' ' + escapeHTML(item.token) + '</strong></td><td><span class="status-pill ' + escapeHTML(item.status) + '">' + escapeHTML(item.status) + '</span>' + (item.simulated ? '<small>' + escapeHTML(text("simulated")) + '</small>' : '') + '</td><td>' + escapeHTML(item.createdAt) + '</td><td>' + (item.txHash ? '<code>' + escapeHTML(item.txHash) + '</code>' : '<span class="muted-cell">' + text("noTx") + '</span>') + '</td><td>' + ((item.status === "queued" || item.status === "submitted") ? '<button type="button" class="secondary-button queue-simulate" data-airdrop-id="' + escapeHTML(item.id) + '" data-chain-id="' + escapeHTML(item.chainId || "0x61") + '">' + escapeHTML(text("simulate")) + '</button>' : '<span class="muted-cell">-</span>') + '</td></tr>').join("");
++    document.querySelectorAll(".queue-simulate").forEach(button => button.addEventListener("click", () => simulateAirdrop(button)));
++  }
++
++  function updateRuleFields() {
++    const manual = $("rule-code").value === "admin_approved";
++    $("amount-field").hidden = !manual;
++    $("amount").disabled = !manual;
++    $("asset-field").hidden = manual;
++    $("asset-id").required = !manual;
++  }
++
++  async function loadAssets() {
++    const data = await request("/api/v1/hapw/assets?page=1&pageSize=100", {}, "public");
++    state.assets = data.items || [];
++    renderAssets();
++  }
++
++  async function loadQueue() {
++    const params = new URLSearchParams();
++    const status = $("status-filter").value;
++    const wallet = $("wallet-filter").value.trim();
++    if (status) params.set("status", status);
++    if (wallet) params.set("walletAddress", wallet);
++    const data = await request("/api/v1/admin/airdrops" + (params.toString() ? "?" + params.toString() : ""));
++    state.queue = data.items || [];
++    renderQueue();
++    return state.queue;
++  }
++
++  async function loadDashboard() {
++    const [rules, treasury, networks] = await Promise.all([request("/api/v1/admin/airdrop-rules"), request("/api/v1/clip/treasury", {}, "public"), request("/api/v1/admin/bnb-networks")]);
++    const options = (networks.items || []).filter(item => item.simulationOnly).map(item => '<option value="' + escapeHTML(item.chainId) + '">' + escapeHTML(item.name) + ' · ' + escapeHTML(item.nativeCurrency) + ' · ' + escapeHTML(state.lang === "zh" ? "模拟" : "simulation") + '</option>').join("");
++    if (options) $("chain-id").innerHTML = options;
++    state.rules = rules.items || [];
++    renderRules();
++    await loadAssets();
++    const queue = await loadQueue();
++    renderStats(treasury.treasury, queue);
++  }
++
++  function showDashboard() { $("auth-panel").hidden = true; $("dashboard").hidden = false; setConnection(true, text("connected")); }
++
++  function makeRequestID() { $("request-id").value = "admin-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7); }
++
++  async function connect() {
++    const key = $("admin-key").value.trim();
++    if (!key) { setFeedback("auth-feedback", text("required"), "error"); return; }
++    state.key = key;
++    state.executorKey = $("executor-key").value.trim();
++    sessionStorage.setItem("clipli-admin-key", state.key);
++    if (state.executorKey) sessionStorage.setItem("clipli-executor-key", state.executorKey);
++    setFeedback("auth-feedback", text("loading"));
++    try { await loadDashboard(); showDashboard(); setFeedback("auth-feedback", ""); } catch (error) { setConnection(false, text("notConnected"), true); setFeedback("auth-feedback", text("invalidKey"), "error"); }
++  }
++
++  async function checkEligibility() {
++    const address = $("wallet-address").value.trim();
++    const rule = $("rule-code").value;
++    const asset = $("asset-id").value;
++    if (!address || !rule || (rule === "hapw_redemption" && !asset)) { setFeedback("create-feedback", text("required"), "error"); return; }
++    const params = new URLSearchParams({ address, ruleCode: rule });
++    if (asset) params.set("assetId", asset);
++    try {
++      const data = await request("/api/v1/wallet/airdrop-eligibility?" + params.toString(), {}, "public");
++      const label = data.eligible ? text("eligible") : text("notEligible");
++      $("eligibility").hidden = false;
++      $("eligibility").innerHTML = '<strong>' + escapeHTML(label) + '</strong> · ' + escapeHTML(data.reason) + (data.amount ? ' · ' + Number(data.amount).toLocaleString() + ' CLIP' : '') + (data.existingAirdropId ? ' · ' + escapeHTML(data.existingAirdropId) : '');
++      if (data.amount && rule === "hapw_redemption") $("amount").value = data.amount;
++    } catch (error) { setFeedback("create-feedback", text("checkFailed") + " · " + error.message, "error"); }
++  }
++
++  async function createAirdrop(event) {
++    event.preventDefault();
++    const rule = $("rule-code").value;
++    const body = { requestId: $("request-id").value.trim(), ruleCode: rule, walletAddress: $("wallet-address").value.trim(), chainId: $("chain-id").value.trim(), assetId: $("asset-id").value };
++    const amount = Number($("amount").value);
++    if (rule === "admin_approved") body.amount = amount;
++    if (!body.requestId || !body.walletAddress || !body.chainId || (rule === "admin_approved" && (!amount || amount < 1)) || (rule === "hapw_redemption" && !body.assetId)) { setFeedback("create-feedback", text("required"), "error"); return; }
++    try {
++      await request("/api/v1/admin/airdrops", { method: "POST", body: JSON.stringify(body) });
++      setFeedback("create-feedback", text("queued"), "success");
++      $("eligibility").hidden = true;
++      makeRequestID();
++      await loadDashboard();
++    } catch (error) { setFeedback("create-feedback", text("createFailed") + " · " + error.message, "error"); }
++  }
++
++  async function writeResult(event) {
++    event.preventDefault();
++    const id = $("result-id").value.trim();
++    if (!id || !state.executorKey) { setFeedback("result-feedback", text("publicExecutor"), "error"); return; }
++    const body = { status: $("result-status").value, txHash: $("tx-hash").value.trim(), failureReason: $("failure-reason").value.trim() };
++    try { await request("/api/v1/internal/airdrops/" + encodeURIComponent(id) + "/result", { method: "POST", body: JSON.stringify(body) }, "executor"); setFeedback("result-feedback", text("resultWritten"), "success"); await loadQueue(); } catch (error) { setFeedback("result-feedback", text("statusFailed") + " · " + error.message, "error"); }
++  }
++
++  async function simulateAirdrop(button) {
++    const id = button.dataset.airdropId;
++    button.disabled = true;
++    try {
++      await request("/api/v1/admin/airdrops/" + encodeURIComponent(id) + "/simulate", { method: "POST", body: JSON.stringify({ chainId: button.dataset.chainId || "0x61" }) });
++      setFeedback("create-feedback", text("simulationNote"), "success");
++      await loadDashboard();
++    } catch (error) {
++      setFeedback("create-feedback", text("simulationFailed") + " · " + error.message, "error");
++      button.disabled = false;
++    }
++  }
++
++  function clearSession() { sessionStorage.removeItem("clipli-admin-key"); sessionStorage.removeItem("clipli-executor-key"); state.key = ""; state.executorKey = ""; $("dashboard").hidden = true; $("auth-panel").hidden = false; $("admin-key").value = ""; $("executor-key").value = ""; setConnection(false, text("notConnected")); setFeedback("auth-feedback", ""); }
++
++  $("language-toggle").addEventListener("click", () => { state.lang = state.lang === "zh" ? "en" : "zh"; sessionStorage.setItem("clipli-admin-lang", state.lang); applyCopy(); if (!$("dashboard").hidden) { renderRules(); renderAssets(); renderQueue(); } });
++  $("clear-session").addEventListener("click", clearSession);
++  $("auth-form").addEventListener("submit", event => { event.preventDefault(); connect(); });
++  $("airdrop-form").addEventListener("submit", createAirdrop);
++  $("check-eligibility").addEventListener("click", checkEligibility);
++  $("rule-code").addEventListener("change", updateRuleFields);
++  $("refresh-queue").addEventListener("click", () => loadDashboard().catch(() => setFeedback("create-feedback", text("refreshFailed"), "error")));
++  $("filter-queue").addEventListener("click", () => loadQueue().catch(error => setFeedback("create-feedback", text("refreshFailed") + " · " + error.message, "error")));
++  $("result-form").addEventListener("submit", writeResult);
++  makeRequestID();
++  applyCopy();
++  if (state.key) { $("admin-key").value = state.key; $("executor-key").value = state.executorKey; connect(); }
++})();
+diff --git a/public/app.js b/public/app.js
+index 8c046f8..7bfd920 100644
+--- a/public/app.js
++++ b/public/app.js
+@@ -789,18 +789,43 @@ async function renderWallet() {
+     '<button class="wallet-row ', state.selectedWallet === wallet[0] ? "selected" : "", '" type="button" data-wallet="', wallet[0], '"><span class="wallet-logo">', wallet[1],
+     '</span><span><strong>', wallet[0], '</strong><small>', t(wallet[2]), '</small></span><span>', profile.walletProvider === wallet[0] ? t("connected") : "→", "</span></button>"
+   ].join("")).join("");
++  const connected = Boolean(profile.wallet && profile.walletStatus === "connected");
++  const address = connected ? escapeHtml(profile.wallet) : t("walletNotConnected");
++  const assetRows = (profile.walletAssets || []).map(asset => '<article class="wallet-asset-row"><div><strong>' + escapeHtml(asset.tokenId) + ' · ' + escapeHtml(asset.name) + '</strong><small>' + escapeHtml(asset.sourceCode) + ' · ' + escapeHtml(asset.externalAssetId) + '</small></div><span>' + escapeHtml(asset.balance) + '</span><b>' + (asset.canRedeem ? t("walletAssetRedeemable") : asset.redemptionStatus || t("walletAssetObserved")) + '</b></article>').join("");
++  const airdropRows = (profile.airdrops || []).map(item => '<article class="wallet-airdrop-row"><div><strong>' + money(item.amount) + ' ' + escapeHtml(item.token) + '</strong><small>' + escapeHtml(item.ruleCode) + (item.assetId ? ' · ' + escapeHtml(item.assetId) : '') + '</small></div><span class="status">' + escapeHtml(item.status) + '</span><b>' + (item.txHash ? escapeHtml(item.txHash) : t("airdropAwaitingExecution")) + '</b></article>').join("");
++  const walletSummary = '<section class="wallet-summary"><div><small>' + t("walletAddress") + '</small><strong class="wallet-address">' + address + '</strong></div><div><small>' + t("walletChain") + '</small><strong>' + (escapeHtml(profile.walletChainId || "-") ) + '</strong></div><div><small>' + t("walletConnectionStatus") + '</small><strong>' + (connected ? t("connected") : t("walletNotConnected")) + '</strong></div></section>';
++  const walletAssetsSection = '<section class="wallet-data-section"><header><div><p class="eyebrow">HAPW PORTFOLIO</p><h2>' + t("walletAssetsTitle") + '</h2><p>' + t("walletAssetsLead") + '</p></div><button class="button" type="button" id="refresh-wallet-assets" ' + (connected ? "" : "disabled") + '>' + t("refreshAssets") + '</button></header><div class="wallet-asset-list">' + (assetRows || '<p class="empty-inline">' + t("noWalletAssets") + '</p>') + '</div></section>';
++  const airdropsSection = '<section class="wallet-data-section"><header><div><p class="eyebrow">CLIP AIRDROP</p><h2>' + t("airdropsTitle") + '</h2><p>' + t("airdropsLead") + '</p></div><a class="text-link" href="#/clip">' + t("mechanismDetails") + ' →</a></header><div class="wallet-airdrop-list">' + (airdropRows || '<p class="empty-inline">' + t("noAirdrops") + '</p>') + '</div></section>';
+   shell([
+     '<div class="account-shell"><section class="account-card">', pageHead(t("walletEyebrow"), t("walletTitle"), t("walletLead")),
+-    '<div class="account-content"><div class="wallet-list">', rows, '</div><button class="button primary wide" id="connect-wallet" style="margin-top:20px">', t("connectSelected"),
+-    "</button></div></section></div>"
++    '<div class="account-content"><div class="wallet-list">', rows, '</div><div class="wallet-actions"><button class="button primary" id="connect-wallet" type="button">', connected ? t("connected") : t("connectSelected"), '</button><button class="button" id="disconnect-wallet" type="button" ', connected ? "" : "disabled", '>', t("disconnectWallet"), '</button></div>', walletSummary, walletAssetsSection, airdropsSection, '</div></section></div>'
+   ].join(""));
++  if (window.ethereum && typeof window.ethereum.on === "function" && !window.__clipliWalletEventsBound) {
++    const refreshConnectedWallet = () => { if (state.route === "/wallet") renderWallet(); };
++    window.ethereum.on("accountsChanged", refreshConnectedWallet);
++    window.ethereum.on("chainChanged", refreshConnectedWallet);
++    window.__clipliWalletEventsBound = true;
++  }
+   document.querySelectorAll("[data-wallet]").forEach(button => button.addEventListener("click", () => { state.selectedWallet = button.dataset.wallet; renderWallet(); }));
+   document.getElementById("connect-wallet").addEventListener("click", async event => {
+     if (!state.selectedWallet) return toast(t("chooseWallet"), "error");
+     event.currentTarget.disabled = true;
+-    try { await api("/api/profile/wallet", { method: "POST", body: JSON.stringify({ provider: state.selectedWallet }) }); toast(t("connected")); renderWallet(); }
++    try {
++      const provider = window.ethereum;
++      if (!provider || typeof provider.request !== "function") throw new Error(t("walletProviderUnavailable"));
++      const accounts = await provider.request({ method: "eth_requestAccounts" });
++      const addressValue = Array.isArray(accounts) && accounts[0];
++      if (!addressValue) throw new Error(t("walletAddressUnavailable"));
++      const chainId = await provider.request({ method: "eth_chainId" });
++      await api("/api/v1/wallet/connect", { method: "POST", body: JSON.stringify({ provider: state.selectedWallet, address: addressValue, chainId }) });
++      toast(t("connected")); renderWallet();
++    }
+     catch (err) { toast(err.message, "error"); event.currentTarget.disabled = false; }
+   });
++  const disconnect = document.getElementById("disconnect-wallet");
++  if (disconnect) disconnect.addEventListener("click", async () => { await api("/api/v1/wallet/connect", { method: "DELETE" }); toast(t("walletDisconnected")); renderWallet(); });
++  const refresh = document.getElementById("refresh-wallet-assets");
++  if (refresh) refresh.addEventListener("click", () => renderWallet());
+ }
+ 
+ async function renderSecurity() {
+diff --git a/public/brand-locales.js b/public/brand-locales.js
+index ea825d2..a33a461 100644
+--- a/public/brand-locales.js
++++ b/public/brand-locales.js
+@@ -115,3 +115,16 @@ const clipliNoPlaybackMintCopy = {
+ Object.entries(clipliNoPlaybackMintCopy).forEach(([locale, copy]) => {
+   Object.assign(window.CLIPLI_LOCALES[locale], copy);
+ });
++
++const clipliWalletCopy = {
++  zh: { walletAddress: "钱包地址", walletChain: "网络", walletConnectionStatus: "连接状态", walletNotConnected: "尚未连接", walletProviderUnavailable: "未检测到浏览器钱包，请安装支持 EIP-1193 的钱包扩展。", walletAddressUnavailable: "钱包没有返回地址。", disconnectWallet: "断开钱包", walletDisconnected: "钱包已断开", walletAssetsTitle: "钱包内的项目资产", walletAssetsLead: "仅显示外部资产平台同步到 Clipli 的 HAPW 关联资产。", refreshAssets: "刷新资产", noWalletAssets: "该钱包暂未同步到 Clipli 关联资产。", walletAssetRedeemable: "可核销", walletAssetObserved: "已同步", airdropsTitle: "CLIP 空投记录", airdropsLead: "核销符合规则后，CLIP 会创建到该钱包的空投任务；链上发放由外部执行器完成。", noAirdrops: "暂无空投记录", airdropAwaitingExecution: "等待外部执行器" },
++  en: { walletAddress: "Wallet address", walletChain: "Network", walletConnectionStatus: "Connection", walletNotConnected: "Not connected", walletProviderUnavailable: "No injected wallet found. Install an EIP-1193 browser wallet to continue.", walletAddressUnavailable: "The wallet did not return an address.", disconnectWallet: "Disconnect wallet", walletDisconnected: "Wallet disconnected", walletAssetsTitle: "Project assets in this wallet", walletAssetsLead: "Only HAPW assets synced from external asset platforms are shown.", refreshAssets: "Refresh assets", noWalletAssets: "No Clipli-related assets have been synced for this wallet.", walletAssetRedeemable: "Redeemable", walletAssetObserved: "Synced", airdropsTitle: "CLIP airdrops", airdropsLead: "When a rule is satisfied, Clipli creates an airdrop task for this wallet; an external executor completes the on-chain delivery.", noAirdrops: "No airdrop records", airdropAwaitingExecution: "Awaiting external executor" },
++  es: { walletAddress: "Dirección de cartera", walletChain: "Red", walletConnectionStatus: "Conexión", walletNotConnected: "Sin conexión", walletProviderUnavailable: "No se detectó una cartera inyectada. Instala una cartera EIP-1193.", walletAddressUnavailable: "La cartera no devolvió una dirección.", disconnectWallet: "Desconectar cartera", walletDisconnected: "Cartera desconectada", walletAssetsTitle: "Activos del proyecto en esta cartera", walletAssetsLead: "Solo se muestran HAPW sincronizados desde plataformas externas.", refreshAssets: "Actualizar activos", noWalletAssets: "No hay activos de Clipli sincronizados para esta cartera.", walletAssetRedeemable: "Canjeable", walletAssetObserved: "Sincronizado", airdropsTitle: "Airdrops de CLIP", airdropsLead: "Al cumplir una regla se crea una tarea de airdrop; un ejecutor externo completa la entrega en cadena.", noAirdrops: "Sin registros de airdrop", airdropAwaitingExecution: "Esperando ejecutor externo" },
++  ja: { walletAddress: "ウォレットアドレス", walletChain: "ネットワーク", walletConnectionStatus: "接続状態", walletNotConnected: "未接続", walletProviderUnavailable: "注入型ウォレットが見つかりません。EIP-1193対応ウォレットをインストールしてください。", walletAddressUnavailable: "ウォレットからアドレスが返されませんでした。", disconnectWallet: "ウォレットを切断", walletDisconnected: "ウォレットを切断しました", walletAssetsTitle: "このウォレットのプロジェクト資産", walletAssetsLead: "外部アセットプラットフォームから同期されたHAPWのみ表示します。", refreshAssets: "資産を更新", noWalletAssets: "このウォレットにClipli関連資産はまだ同期されていません。", walletAssetRedeemable: "償却可能", walletAssetObserved: "同期済み", airdropsTitle: "CLIPエアドロップ", airdropsLead: "ルール達成後にウォレット向けタスクを作成し、外部実行者がチェーン配布を行います。", noAirdrops: "エアドロップ記録なし", airdropAwaitingExecution: "外部実行者待ち" },
++  fr: { walletAddress: "Adresse du portefeuille", walletChain: "Réseau", walletConnectionStatus: "Connexion", walletNotConnected: "Non connecté", walletProviderUnavailable: "Aucun portefeuille injecté détecté. Installez un portefeuille EIP-1193.", walletAddressUnavailable: "Le portefeuille n'a pas renvoyé d'adresse.", disconnectWallet: "Déconnecter le portefeuille", walletDisconnected: "Portefeuille déconnecté", walletAssetsTitle: "Actifs du projet dans ce portefeuille", walletAssetsLead: "Seuls les HAPW synchronisés depuis des plateformes externes sont affichés.", refreshAssets: "Actualiser les actifs", noWalletAssets: "Aucun actif Clipli n'est synchronisé pour ce portefeuille.", walletAssetRedeemable: "Échangeable", walletAssetObserved: "Synchronisé", airdropsTitle: "Airdrops CLIP", airdropsLead: "Après validation d'une règle, une tâche d'airdrop est créée ; un exécuteur externe effectue la livraison on-chain.", noAirdrops: "Aucun airdrop", airdropAwaitingExecution: "En attente de l'exécuteur externe" },
++  ko: { walletAddress: "지갑 주소", walletChain: "네트워크", walletConnectionStatus: "연결 상태", walletNotConnected: "연결되지 않음", walletProviderUnavailable: "주입된 지갑을 찾을 수 없습니다. EIP-1193 지갑 확장을 설치하세요.", walletAddressUnavailable: "지갑이 주소를 반환하지 않았습니다.", disconnectWallet: "지갑 연결 해제", walletDisconnected: "지갑 연결이 해제되었습니다", walletAssetsTitle: "이 지갑의 프로젝트 자산", walletAssetsLead: "외부 자산 플랫폼에서 동기화된 HAPW만 표시합니다.", refreshAssets: "자산 새로고침", noWalletAssets: "이 지갑에 동기화된 Clipli 관련 자산이 없습니다.", walletAssetRedeemable: "상각 가능", walletAssetObserved: "동기화됨", airdropsTitle: "CLIP 에어드롭", airdropsLead: "규칙을 충족하면 지갑 대상 에어드롭 작업이 생성되고 외부 실행자가 온체인 전달을 완료합니다.", noAirdrops: "에어드롭 기록 없음", airdropAwaitingExecution: "외부 실행자 대기 중" }
++};
++
++Object.entries(clipliWalletCopy).forEach(([locale, copy]) => {
++  Object.assign(window.CLIPLI_LOCALES[locale], copy);
++});
+diff --git a/public/index.html b/public/index.html
+index f504ab4..dfb8611 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -13,15 +13,15 @@
+       document.documentElement.dataset.theme = saved || preferred;
+     })();
+   </script>
+-  <link rel="stylesheet" href="/styles.css?v=10">
++  <link rel="stylesheet" href="/styles.css?v=11">
+ </head>
+ <body>
+   <a class="skip-link" href="#main">Skip to content</a>
+   <div id="app"></div>
+   <div id="toast-region" class="toast-region" aria-live="polite"></div>
+   <div id="modal-root"></div>
+-  <script src="/locales.js?v=10" defer></script>
+-  <script src="/brand-locales.js?v=10" defer></script>
+-  <script src="/app.js?v=10" defer></script>
++  <script src="/locales.js?v=11" defer></script>
++  <script src="/brand-locales.js?v=11" defer></script>
++  <script src="/app.js?v=11" defer></script>
+ </body>
+ </html>
+diff --git a/public/styles.css b/public/styles.css
+index cfabbdd..fcddb1a 100644
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -94,6 +94,25 @@
+ .faq-item[open] summary b { transform: rotate(45deg); }
+ .faq-item p { max-width: 820px; margin: -2px 0 22px; color: var(--muted); font-size: 13px; line-height: 1.8; }
+ 
++.wallet-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
++.wallet-summary { display: grid; grid-template-columns: 1.8fr 1fr 1fr; gap: 1px; margin-top: 28px; background: var(--line); border: 1px solid var(--line); }
++.wallet-summary > div { min-width: 0; padding: 17px; background: var(--panel); }
++.wallet-summary small, .wallet-summary strong { display: block; }
++.wallet-summary small { color: var(--muted); font-size: 11px; }
++.wallet-summary strong { margin-top: 7px; font-size: 14px; }
++.wallet-summary .wallet-address { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
++.wallet-data-section { margin-top: 34px; padding-top: 28px; border-top: 1px solid var(--line); }
++.wallet-data-section > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 17px; }
++.wallet-data-section h2 { margin: 5px 0 7px; font-size: 24px; }
++.wallet-data-section header p:not(.eyebrow) { max-width: 660px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
++.wallet-asset-list, .wallet-airdrop-list { border-top: 1px solid var(--line); }
++.wallet-asset-row, .wallet-airdrop-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); }
++.wallet-asset-row strong, .wallet-asset-row small, .wallet-airdrop-row strong, .wallet-airdrop-row small { display: block; }
++.wallet-asset-row small, .wallet-airdrop-row small { margin-top: 5px; color: var(--muted); font-size: 11px; }
++.wallet-asset-row > span, .wallet-airdrop-row > span { font-weight: 800; }
++.wallet-asset-row > b, .wallet-airdrop-row > b { color: var(--mint); font-size: 11px; font-weight: 750; text-align: right; }
++.empty-inline { margin: 0; padding: 18px 0; color: var(--muted); font-size: 13px; }
++
+ @media (max-width: 760px) {
+   .platform-list { grid-template-columns: 1fr; }
+   .platform-option:nth-child(odd) { border-right: 0; padding-right: 12px; }
+@@ -102,6 +121,11 @@
+   .reserve-row { grid-template-columns: 1fr; gap: 14px; }
+   .reserve-row .button { width: 100%; }
+   .pool-snapshot { grid-template-columns: 1fr; }
++  .wallet-summary { grid-template-columns: 1fr; }
++  .wallet-data-section > header { flex-direction: column; }
++  .wallet-data-section > header .button, .wallet-data-section > header .text-link { align-self: flex-start; }
++  .wallet-asset-row, .wallet-airdrop-row { grid-template-columns: 1fr auto; gap: 9px 14px; }
++  .wallet-asset-row > b, .wallet-airdrop-row > b { grid-column: 1 / -1; text-align: left; }
+ }
+ 
+ :root[data-theme="light"] {

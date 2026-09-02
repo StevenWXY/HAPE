@@ -6,6 +6,21 @@
   "scripts": {
     "start": "go run ./cmd/server",
     "test": "go test ./...",
-    "format": "gofmt -w cmd internal"
+    "format": "gofmt -w cmd internal",
+    "contracts:compile": "hardhat compile",
+    "contracts:test": "hardhat test test/clipli.contracts.js",
+    "contracts:coverage": "hardhat coverage --testfiles test/clipli.contracts.js",
+    "test:economics": "hardhat test test/economics.model.js",
+    "test:api-e2e": "node scripts/test-api-e2e.js",
+    "test:all": "go test ./... && hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.28.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "@uniswap/v2-core": "^1.0.1",
+    "@uniswap/v2-periphery": "^1.1.0-beta.0"
   }
 }

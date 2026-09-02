@@ -15,7 +15,7 @@ Clipli 是版权素材驱动的 AI 视频创作与资产行权平台。名称取
 | Clipli | 平台名称，取意 Create、Click、Grow | 保存授权、核销、生成、费用与行权记录，不替代权利判断 |
 | HAPW | 面向不同 IP 的授权证书资产 | 由版权方授权，对应具体素材包和使用范围；持有并核销后才能使用素材，不等于底层版权 |
 | 创作额度 | 与 HAPW 授权绑定的计算额度 | 核销时发放，按视频时长和质量消耗，不能脱离授权单独流转 |
-| CLIP | Clipli 的创作服务积分（代币） | 一次性铸造固定总量并存放于平台金库；按中心化规则分发，也可由外部 DEX 兑换取得；用于生成服务和有限储备兑换，不代表版权或收益权 |
+| CLIP | Clipli 的创作服务积分（BNB 代币） | 9 亿创世供应、10 亿硬顶；最多 1 亿由 Timelock/Guardian 约束的自适应发行器释放；用于生成服务和有限储备兑换，不代表版权或收益权 |
 | HAPW 核销 | 在 Clipli 内开启绑定素材的生成许可 | 不可逆；产生授权凭证、创作额度和 CLIP，并关闭同一资产的行权路径 |
 | 资产行权 | 保留 HAPW 未核销状态并创建第三方平台签名请求 | 不产生创作额度或 CLIP，也不等同于底层版权转让或第三方平台接纳 |
 | 第三方平台 | Clipli 外部的展示、发行或交易平台 | 当前入口包括海文发、OpenSea、Foundation、SuperRare、Art Blocks |
@@ -75,7 +75,7 @@ Clipli 是版权素材驱动的 AI 视频创作与资产行权平台。名称取
 - 核销后同步产生唯一授权凭证、额度余额、CLIP 流水；资产不可再次核销或行权。
 - 生成支持 15/30/60 秒和标准 720p、高质量 1080p；前后端使用相同公式同步扣除额度与 CLIP。
 - 内容表现是生成任务的附属记录，不进入授权、额度或 CLIP 的计算公式。
-- CLIP 采用“一次性铸造 + 平台钱包托管 + 中心化分发”模型。演示总量为 `10,000,000 CLIP`，其中 `250,000 CLIP` 标记为 DEX 流动性配置，其余由平台金库和内部账本共同记录。
+- CLIP 采用“9 亿创世供应 + 1 亿治理预留 + 平台账本分发”模型，链上硬顶为 `1,000,000,000 CLIP`；本地演示仍把 `250,000 CLIP` 标记为 DEX 流动性配置，其余由平台金库和内部账本共同记录。
 - 本版不做真实身份验证或 KYC。`anonymous-demo` 是进程内用户引用；钱包连接是可选的操作句柄，不构成身份认证。
 - CLIP 资产卡显示余额、参考汇率、CLIP/USDT 双边储备和名义流动性。
 - CLIP→HAPW 储备兑换显示本金、5% 手续费、总消耗、每日 2 枚上限和一次性领取状态。
@@ -101,6 +101,9 @@ AIVideoGeneration  { id, requestId, assetId, title*, duration, quality, creditsU
 CLIPAccount        { balance, quoteAsset, dexUrl, dexPool, hapwExchangeFeeRate }
 CLIPTreasury       { mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, platformWallet, mintMode, distributionMode }
 CLIPDistribution   { requestId, ruleCode, userRef, assetId, amount, before/after balances, createdAt }
+WalletAsset        { walletAddress, assetId, sourceCode, externalAssetId, balance, canRedeem, canExercise }
+AirdropRule        { code, trigger, formula, token, enabled, requiresWallet }
+AirdropRecord      { requestId, ruleCode, walletAddress, chainId, amount, status, allocationSource, txHash, createdAt }
 AssetSource        { code, baseUrl, mode, status, lastSyncedAt, assetCount }
 AssetSyncRun       { sourceCode, status, recordsRead, recordsValid, recordsSaved, startedAt, completedAt }
 SessionPolicy      { mode, userRef, identityVerification, kycRequired, walletOptional, persistence }
@@ -134,6 +137,13 @@ ExternalPlatform   { code, name, url }
 - `GET /api/v1/clip/treasury`：一次性铸造总量、平台钱包余额、DEX 流动性配置、内部账本余额和守恒校验。
 - `GET /api/v1/clip/distribution-rules`：中心化 CLIP 分发规则；本版只启用 HAPW 核销规则。
 - `GET /api/v1/clip/distributions`：CLIP 分发流水，可按 `assetId` 或 `requestId` 筛选。
+- `POST /api/v1/wallet/connect`、`DELETE /api/v1/wallet/connect`：登记/断开 EIP-1193 钱包地址与网络；旧 `/api/profile/wallet` 继续兼容。
+- `GET /api/v1/wallet/assets`：按钱包地址返回外部平台同步的 HAPW 关联资产，只读且带来源标记。
+- `GET /api/v1/wallet/airdrop-eligibility`、`GET /api/v1/airdrop-rules`：查询规则和指定钱包的资格。
+- `GET /api/v1/airdrops`：按钱包或状态读取空投任务。
+- `GET/POST /api/v1/admin/airdrops`、`GET /api/v1/admin/airdrop-rules`：受 `CLIPLI_ADMIN_API_KEY` 保护的运营接口，支持指定钱包按规则创建空投。
+- `POST /api/v1/internal/airdrops/:id/result`：受 `CLIPLI_AIRDROP_EXECUTOR_KEY` 保护的外部执行器回调，推进 `queued → submitted → confirmed|failed`。
+- `GET /api/v1/admin/bnb-networks` 与 `POST /api/v1/admin/airdrops/:id/simulate`：BNB 测试边界。正式 BEP-20 合约上线前只确认中心化账本和任务状态，模拟回执使用 `sim-bnb-*`，不得当作真实交易哈希。
 - `GET /api/v1/integrations/asset-requirements`：外部平台必须提供的资产、授权、媒体、事件、关联作品和可选 Webhook 接口清单。
 - `GET /api/v1/integrations/asset-sources`、`GET /api/v1/integrations/asset-sources/:code`：外部资产源状态与最近同步时间。
 - `GET /api/v1/integrations/asset-sync-runs`：同步批次、读取/校验/保存条数与失败原因。
@@ -172,6 +182,8 @@ ExternalPlatform   { code, name, url }
 - 外部资产源只读，不向平台回写。平台需要的上游接口、字段和签名要求由 `/api/v1/integrations/asset-requirements` 固化；同步失败保留最后一次有效快照并记录 `AssetSyncRun`。
 - HAPW 对外同时提供前端兼容的扁平字段和结构化 `authorization`、`provenance`、`media`、`external` 字段；新消费者优先使用结构化字段。
 - CLIP 的铸币动作不暴露为 API。服务层仅在成功核销时从平台金库按 `floor(creditYield × 0.40)` 分发；生成、授权和 HAPW 兑换费用回到金库，所有变化写入内部账本。
+- 钱包连接只记录地址、提供方和 chain ID，不接收私钥。HAPW 核销在已连接钱包上自动创建 `hapw_redemption` 空投任务；运营方可通过 `admin_approved` 规则向指定钱包预留 CLIP。真实链上转账由外部执行器使用平台钱包或托管签名服务完成，Clipli 只保存任务与交易哈希。
+- 运营密钥和执行器密钥只从 `CLIPLI_ADMIN_API_KEY`、`CLIPLI_AIRDROP_EXECUTOR_KEY` 环境变量读取，绝不进入前端或公开响应。生产环境如需证明钱包控制权，应增加 challenge / `personal_sign` 或 EIP-4361 验证；地址本身不等于身份认证。
 - 所有写操作在服务层锁内完成校验和状态修改，禁止部分扣款；核销、生成、兑换、区域授权与行权由 `requestId` 保证幂等。
 - 完整 API 修改必须同步更新 `api/openapi.yaml`、`docs/API.md` 和 HTTP 契约测试。
 - HAPW、授权凭证、创作额度、CLIP、生成任务、资产行权必须为独立实体，以标识互相引用。

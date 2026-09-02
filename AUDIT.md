@@ -36,3 +36,19 @@
 2. 接入真实模型时增加任务队列、失败退款、内容审核和版权申诉。
 3. 为外部 HAPW 来源和五个第三方平台建立适配器，读取授权、媒体、事件、作品、上架状态和平台资产标识。
 4. 对 DEX 数据使用可信报价源，并明确快照延迟、滑点和池地址。
+
+## BNB CLIP 合约审查（2026-09-02）
+
+- 新增 `contracts/ClipToken.sol`、`AdaptiveMinter.sol`、`ClipAirdrop.sol`、`ClipliDexPair.sol` 和 `ClipliTimelock.sol`，目标链为 BNB Smart Chain（97/56），不是 Ethereum。
+- 供应模型：硬顶 1,000,000,000 CLIP；创世一次性铸造 900,000,000；最多 100,000,000 作为自适应发行储备。发行需要活跃用户/持有人/结算量增长快照，按 50/30/20 加权，受每 epoch 25 bps、每年 5%、排队锁定、Timelock 延迟和 Guardian 暂停约束。
+- 空投使用资产快照生成的 Merkle root、claim 位图和活动资金隔离；关闭活动只回收自身未领取余额，不能扫走其他活动资金。
+- 发行器校验配置硬顶不得超过 Token 硬顶，指标增长采用饱和上限避免极大输入乘法溢出；排队配额在取消或执行时释放/结算。
+- 部署脚本把 Timelock 接入发行器 Guardian 和 Token Pauser，同时在真实 BNB 网络拒绝缺失治理/金库/供应参数的默认临时账户配置。
+- 本地 AMM 仅用于 Hardhat 测试，包含 0.30% 费率、deadline、滑点、重入保护和恒积检查。生产环境应使用经审计的 PancakeSwap/Uniswap BNB 部署，不应直接上线 `ClipliDexPair`。
+- 测试结果：`npm run contracts:compile`、`npm run contracts:test` 通过（6/6）；覆盖率约 93.4% 行、91.77% 语句（41.35% 分支、83.78% 函数）；`npm test` 的 Go 测试全部通过；生产依赖 `npm audit --omit=dev` 无漏洞。
+- Hardhat 开发工具链仍有上游审计告警（当前 `npm audit` 报告 45 项，其中 17 项 high）；告警来自 Hardhat/solc/测试报告器及其传递依赖，不进入 Go 生产运行时。`npm audit fix --force` 会升级到 Hardhat 3 并产生破坏性变更，因此未强制执行；升级前需单独验证插件兼容性。
+- 尚未连接 BNB RPC、部署正式合约、配置真实多签/硬件钱包、预言机或链上 DEX。当前部署演练只在 Chain ID 97 的隔离 Hardhat 网络完成，输出地址不能用于真实交易。
+
+## 全链路复核（2026-09-03）
+
+最新的前端、Go API、合约、经济模型和安全回归记录见 [`docs/COMPREHENSIVE_TEST_2026-09-03.md`](docs/COMPREHENSIVE_TEST_2026-09-03.md)。本轮修复了后台两个表单的 JSON 双重编码、钱包页移动端横溢出、幂等键参数重放、空投回执/终态校验，以及发行器同一 epoch 重复配额。真实 BSC 测试网只读 RPC 已返回 Chain ID `0x61`；海文发精确模板查询已返回 `tplId=100053`、余额 `2`；正式合约、DEX 池、外部执行器和海文发到 Clipli 的资产权益自动映射仍未上线。

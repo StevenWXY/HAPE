@@ -21,6 +21,9 @@ tags:
   - name: HAPW Exchanges
   - name: Creation
   - name: Account
+  - name: Wallets
+  - name: Airdrops
+  - name: Operations
   - name: CLIP Treasury
   - name: Integrations
   - name: Compatibility
@@ -359,6 +362,245 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SessionEnvelope' }
 
+  /api/v1/wallet/connect:
+    post:
+      tags: [Wallets]
+      summary: Connect an EIP-1193 wallet address
+      description: Stores the provider-returned address and chain metadata. Clipli never receives a private key or signs from the browser.
+      operationId: connectWalletV1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WalletConnectRequest' }
+      responses:
+        '200':
+          description: Updated wallet profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [Wallets]
+      summary: Disconnect the current wallet
+      operationId: disconnectWalletV1
+      responses:
+        '200':
+          description: Updated wallet profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+
+  /api/v1/wallet/assets:
+    get:
+      tags: [Wallets]
+      summary: List Clipli-related HAPW assets observed for a wallet
+      description: Read-only assets are source-stamped from an external asset platform. The wallet address is not an ownership proof by itself.
+      operationId: listWalletAssets
+      parameters:
+        - $ref: '#/components/parameters/WalletAddress'
+      responses:
+        '200':
+          description: Wallet asset snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletAssetListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/wallet/airdrop-eligibility:
+    get:
+      tags: [Wallets, Airdrops]
+      summary: Evaluate whether a wallet satisfies an airdrop rule
+      operationId: getWalletAirdropEligibility
+      parameters:
+        - $ref: '#/components/parameters/WalletAddress'
+        - name: ruleCode
+          in: query
+          required: true
+          schema: { type: string, examples: [hapw_redemption] }
+        - name: assetId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Eligibility result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AirdropEligibility' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/airdrops:
+    get:
+      tags: [Airdrops]
+      summary: List airdrop records for a wallet
+      operationId: listAirdrops
+      parameters:
+        - name: address
+          in: query
+          required: false
+          schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [queued, submitted, confirmed, failed] }
+      responses:
+        '200':
+          description: Airdrop records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /api/v1/airdrop-rules:
+    get:
+      tags: [Airdrops]
+      summary: List enabled and disabled airdrop rules
+      operationId: listAirdropRules
+      responses:
+        '200':
+          description: Airdrop rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropRuleListEnvelope' }
+
+  /api/v1/admin/airdrops:
+    get:
+      tags: [Operations]
+      summary: List airdrop records for operators
+      security: [{ ClipliAdminKey: [] }]
+      operationId: listAdminAirdrops
+      parameters:
+        - name: walletAddress
+          in: query
+          schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, submitted, confirmed, failed] }
+      responses:
+        '200':
+          description: Operator airdrop records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      tags: [Operations]
+      summary: Create a specified-wallet airdrop or rule-based airdrop
+      security: [{ ClipliAdminKey: [] }]
+      operationId: createAdminAirdrop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AirdropCreateRequest' }
+      responses:
+        '201':
+          description: Airdrop task queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
+        '200':
+          description: Existing result returned for the same requestId
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/airdrop-rules:
+    get:
+      tags: [Operations]
+      summary: List airdrop rules for operators
+      security: [{ ClipliAdminKey: [] }]
+      operationId: listAdminAirdropRules
+      responses:
+        '200':
+          description: Operator airdrop rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropRuleListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/bnb-networks:
+    get:
+      tags: [Operations]
+      summary: List BNB networks available to the airdrop console
+      description: Both entries are simulation-only until the CLIP BEP-20 contract and executor are deployed.
+      security: [{ ClipliAdminKey: [] }]
+      operationId: listBNBNetworks
+      responses:
+        '200':
+          description: BNB network configuration and simulation boundary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BNBNetworkListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/airdrops/{airdropId}/simulate:
+    parameters:
+      - name: airdropId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Operations]
+      summary: Simulate a BNB airdrop confirmation
+      description: Confirms the queued platform ledger entry and returns a simulated receipt. No contract call, RPC broadcast, or wallet signature is performed.
+      security: [{ ClipliAdminKey: [] }]
+      operationId: simulateAirdrop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AirdropSimulationRequest' }
+      responses:
+        '200':
+          description: Simulated airdrop record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/internal/airdrops/{airdropId}/result:
+    parameters:
+      - name: airdropId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Operations]
+      summary: Record the external executor result for an airdrop
+      security: [{ ClipliExecutorKey: [] }]
+      operationId: updateAirdropResult
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AirdropResultRequest' }
+      responses:
+        '200':
+          description: Updated airdrop record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/clip/treasury:
     get:
       tags: [CLIP Treasury]
@@ -501,20 +743,22 @@ paths:
   /api/profile/wallet:
     post:
       tags: [Account]
-      summary: Connect a supported wallet provider
+      summary: Compatibility alias for POST /api/v1/wallet/connect
       operationId: connectWallet
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [provider]
-              properties:
-                provider: { type: string, enum: [MetaMask, Coinbase Wallet, WalletConnect, Venly] }
+            schema: { $ref: '#/components/schemas/WalletConnectRequest' }
       responses:
         '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+    delete:
+      tags: [Account]
+      summary: Compatibility alias for DELETE /api/v1/wallet/connect
+      operationId: disconnectWallet
+      responses:
+        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
 
   /api/profile/overseas:
     post:
@@ -671,6 +915,152 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /api/v1/integrations/platform/verification-codes:
+    post:
+      tags: [Integrations]
+      summary: Ask the external platform to send a verification code
+      operationId: sendExternalPlatformVerificationCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationCodeRequest' }
+      responses:
+        '202':
+          description: Code delivery accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationCodeEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/bindings:
+    get:
+      tags: [Integrations]
+      summary: Get the current external-platform binding for a Clipli user
+      operationId: getExternalPlatformBinding
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Current user binding
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindingEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Integrations]
+      summary: Validate a code at the external platform and bind users
+      operationId: bindExternalPlatformUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BindingRequest' }
+      responses:
+        '201':
+          description: Binding created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindingEnvelope' }
+        '200':
+          description: Existing binding returned for an idempotent retry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BindingEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/users/{userId}/assets:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+    get:
+      tags: [Integrations]
+      summary: Query assets or template counts held by a bound Clipli user
+      operationId: listExternalPlatformUserAssets
+      parameters:
+        - name: tplIds
+          in: query
+          required: false
+          description: Comma-separated Haiwen template IDs. When present, the adapter calls the exact count endpoint.
+          schema: { type: string, pattern: '^[1-9][0-9]*(,[1-9][0-9]*){0,99}$' }
+      responses:
+        '200':
+          description: External platform asset holdings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAssetsEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/users/{userId}/asset-counts:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+      - name: tplIds
+        in: query
+        required: true
+        description: Comma-separated Haiwen template IDs, between 1 and 100 values.
+        schema: { type: string, pattern: '^[1-9][0-9]*(,[1-9][0-9]*){0,99}$' }
+    get:
+      tags: [Integrations]
+      summary: Query exact redeemable asset counts by Haiwen template ID
+      operationId: countExternalPlatformUserAssets
+      responses:
+        '200':
+          description: External platform template counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAssetCountsEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/users/{userId}/assets/{assetId}/redemptions:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+      - name: assetId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 200 }
+    post:
+      tags: [Integrations]
+      summary: Redeem an external asset with a unique serial number
+      operationId: redeemExternalPlatformAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalRedemptionRequest' }
+      responses:
+        '201':
+          description: External redemption completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalRedemptionEnvelope' }
+        '200':
+          description: Existing redemption returned for an idempotent retry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalRedemptionEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
 components:
   parameters:
     AssetId:
@@ -684,6 +1074,12 @@ components:
       in: query
       required: false
       schema: { type: string }
+    WalletAddress:
+      name: address
+      in: query
+      required: true
+      description: EVM wallet address
+      schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
 
   responses:
     BadRequest:
@@ -701,6 +1097,33 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: Missing or invalid operator/executor key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    ServiceUnavailable:
+      description: Required operator or executor configuration is unavailable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: The user is not bound or an idempotency key was reused
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  securitySchemes:
+    ClipliAdminKey:
+      type: apiKey
+      in: header
+      name: X-Clipli-Admin-Key
+      description: Operator key configured by the Clipli deployment.
+    ClipliExecutorKey:
+      type: apiKey
+      in: header
+      name: X-Clipli-Executor-Key
+      description: External airdrop executor callback key configured by the Clipli deployment.
 
   schemas:
     GenericDataEnvelope:
@@ -708,6 +1131,188 @@ components:
       required: [data]
       properties:
         data: { type: object, additionalProperties: true }
+
+    WalletConnectRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, address, chainId]
+      properties:
+        provider: { type: string, enum: [MetaMask, Coinbase Wallet, WalletConnect, Venly] }
+        address: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'], description: BNB Smart Chain Testnet or Mainnet. }
+
+    WalletAsset:
+      type: object
+      required: [id, walletAddress, assetId, tokenId, name, balance, standard, sourceCode, externalAssetId, syncStatus, lastSyncedAt, canRedeem, canExercise]
+      properties:
+        id: { type: string }
+        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        assetId: { type: string }
+        tokenId: { type: string }
+        name: { type: string }
+        balance: { type: string }
+        standard: { type: string, examples: [HAPW-1] }
+        sourceCode: { type: string }
+        externalAssetId: { type: string }
+        externalUrl: { type: string, format: uri }
+        syncStatus: { type: string, enum: [synced, stale, failed] }
+        lastSyncedAt: { type: string, format: date-time }
+        redemptionStatus: { type: string, enum: [available, redeemed, restricted] }
+        canRedeem: { type: boolean }
+        canExercise: { type: boolean }
+
+    WalletAssetListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [walletAddress, items, totalItems, sourceOfTruth]
+          properties:
+            walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/WalletAsset' }
+            totalItems: { type: integer, minimum: 0 }
+            sourceOfTruth: { type: string, const: external-platform }
+
+    AirdropRule:
+      type: object
+      required: [code, name, trigger, formula, token, enabled, requiresWallet, description]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        trigger: { type: string }
+        formula: { type: string }
+        token: { type: string, const: CLIP }
+        enabled: { type: boolean }
+        requiresWallet: { type: boolean }
+        description: { type: string }
+
+    AirdropRuleListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AirdropRule' }
+            totalItems: { type: integer, minimum: 0 }
+
+    AirdropEligibility:
+      type: object
+      required: [ruleCode, walletAddress, token, eligible, reason]
+      properties:
+        ruleCode: { type: string }
+        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        assetId: { type: string }
+        token: { type: string, const: CLIP }
+        amount: { type: integer, minimum: 0 }
+        eligible: { type: boolean }
+        reason: { type: string }
+        existingId: { type: string }
+
+    AirdropRecord:
+      type: object
+      required: [id, requestId, ruleCode, walletAddress, chainId, token, amount, status, eligibility, executionMode, allocationSource, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        requestId: { type: string }
+        ruleCode: { type: string }
+        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        chainId: { type: string }
+        assetId: { type: string }
+        token: { type: string, const: CLIP }
+        amount: { type: integer, minimum: 1 }
+        status: { type: string, enum: [queued, submitted, confirmed, failed] }
+        eligibility: { type: string, enum: [eligible] }
+        executionMode: { type: string, enum: [external-executor, simulated-bnb] }
+        network: { type: string, enum: ['0x61', '0x38'] }
+        simulated: { type: boolean, description: True when the record was confirmed by the local simulator rather than a blockchain transaction. }
+        allocationSource: { type: string, enum: [redemption-entitlement, treasury-reservation] }
+        executorRef: { type: string }
+        txHash: { type: string }
+        failureReason: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AirdropListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AirdropRecord' }
+            totalItems: { type: integer, minimum: 0 }
+
+    AirdropEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/AirdropRecord' }
+
+    AirdropCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [requestId, ruleCode, walletAddress, chainId]
+      properties:
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        ruleCode: { type: string, enum: [hapw_redemption, admin_approved] }
+        walletAddress: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
+        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'], description: BNB Smart Chain Testnet (0x61/97) or Mainnet (0x38/56). }
+        assetId: { type: string }
+        amount: { type: integer, minimum: 1, description: Required for admin_approved; derived from redemption for hapw_redemption. }
+        token: { type: string, const: CLIP }
+
+    AirdropResultRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [submitted, confirmed, failed] }
+        txHash: { type: string }
+        executorRef: { type: string }
+        failureReason: { type: string }
+
+    BNBNetwork:
+      type: object
+      required: [chainId, name, network, nativeCurrency, contractDeployed, simulationOnly]
+      properties:
+        chainId: { type: string, enum: ['0x61', '0x38'] }
+        name: { type: string }
+        network: { type: string, enum: [testnet, mainnet] }
+        nativeCurrency: { type: string, enum: [tBNB, BNB] }
+        contractDeployed: { type: boolean, const: false }
+        simulationOnly: { type: boolean, const: true }
+
+    BNBNetworkListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, contractDeployed, simulationOnly, note]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/BNBNetwork' }
+            contractDeployed: { type: boolean, const: false }
+            simulationOnly: { type: boolean, const: true }
+            note: { type: string }
+
+    AirdropSimulationRequest:
+      type: object
+      additionalProperties: false
+      required: [chainId]
+      properties:
+        chainId: { type: string, enum: ['0x61', '0x38', '97', '56'] }
 
     ErrorEnvelope:
       type: object
@@ -842,7 +1447,7 @@ components:
       required: [symbol, mintMode, mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, totalDistributed, totalReclaimed, platformWallet, contractAddress, network, distributionMode, mintStatus, mintedAt]
       properties:
         symbol: { type: string, const: CLIP }
-        mintMode: { type: string, const: one-time-fixed-supply }
+        mintMode: { type: string, const: genesis-plus-governed-reserve, description: 900M genesis CLIP plus up to 100M governed reserve under a 1B hard cap }
         mintedSupply: { type: integer, minimum: 0 }
         treasuryBalance: { type: integer, minimum: 0 }
         liquidityAllocation: { type: integer, minimum: 0 }
@@ -1364,3 +1969,186 @@ components:
         region: { type: string }
         days: { type: integer, enum: [30, 90, 180] }
         accepted: { type: boolean, const: true }
+
+    VerificationCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [userId, phone]
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 128 }
+        clipliUserId: { type: string, minLength: 1, maxLength: 128, description: Compatibility alias for userId }
+        externalUserId: { type: string, minLength: 1, maxLength: 128, description: Haiwen external platform user ID }
+        phone: { type: string, minLength: 7, maxLength: 20 }
+        mobile: { type: string, minLength: 7, maxLength: 20, description: Compatibility alias for phone }
+        phoneNumber: { type: string, minLength: 7, maxLength: 20, description: Compatibility alias for phone }
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+
+    VerificationChallenge:
+      type: object
+      required: [id, userId, phoneMasked, status, expiresAt, createdAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        phoneMasked: { type: string }
+        deliveryId: { type: string }
+        status: { type: string, enum: [sent, consumed, expired] }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        requestId: { type: string }
+
+    VerificationCodeEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [challenge, verificationId, userId, phoneMasked, status, expiresAt]
+          properties:
+            challenge: { $ref: '#/components/schemas/VerificationChallenge' }
+            verificationId: { type: string }
+            userId: { type: string }
+            phoneMasked: { type: string }
+            status: { type: string }
+            expiresAt: { type: string, format: date-time }
+
+    BindingRequest:
+      type: object
+      additionalProperties: false
+      required: [userId, code]
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 128 }
+        clipliUserId: { type: string, minLength: 1, maxLength: 128, description: Compatibility alias for userId }
+        externalUserId: { type: string, minLength: 1, maxLength: 128, description: Haiwen external platform user ID }
+        phone: { type: string, minLength: 7, maxLength: 20 }
+        mobile: { type: string, minLength: 7, maxLength: 20, description: Compatibility alias for phone }
+        phoneNumber: { type: string, minLength: 7, maxLength: 20, description: Compatibility alias for phone }
+        code: { type: string, pattern: '^[0-9]{4,8}$' }
+        verificationCode: { type: string, pattern: '^[0-9]{4,8}$', description: Compatibility alias for code }
+        verificationId: { type: string }
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+
+    ExternalPlatformBinding:
+      type: object
+      required: [id, userId, externalUserId, phoneMasked, platformCode, status, boundAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        externalUserId: { type: string }
+        phoneMasked: { type: string }
+        platformCode: { type: string }
+        status: { type: string, enum: [bound] }
+        boundAt: { type: string, format: date-time }
+        verificationId: { type: string }
+        requestId: { type: string }
+
+    BindingEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [binding, userId, externalUserId, status]
+          properties:
+            binding: { $ref: '#/components/schemas/ExternalPlatformBinding' }
+            userId: { type: string }
+            externalUserId: { type: string }
+            status: { type: string }
+
+    ExternalAssetHolding:
+      type: object
+      required: [assetId, quantity]
+      properties:
+        assetId: { type: string }
+        serialNumber: { type: string }
+        name: { type: string }
+        quantity: { type: integer, minimum: 0 }
+        status: { type: string }
+        sourceCode: { type: string }
+        externalAssetId: { type: string }
+
+    ExternalAssetCount:
+      type: object
+      required: [tplId, count]
+      properties:
+        tplId: { type: integer, format: int64, minimum: 1 }
+        count: { type: integer, minimum: 0 }
+
+    UserAssetCountsEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [userId, externalUserId, items, retrievedAt, sourceOfTruth]
+          properties:
+            userId: { type: string }
+            externalUserId: { type: string }
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ExternalAssetCount' }
+            retrievedAt: { type: string, format: date-time }
+            sourceOfTruth: { type: string, const: external-platform }
+
+    UserAssetsEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [userId, externalUserId, items, assetCount, totalQuantity, retrievedAt, sourceOfTruth]
+          properties:
+            userId: { type: string }
+            externalUserId: { type: string }
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ExternalAssetHolding' }
+            assetCount: { type: integer, minimum: 0 }
+            totalQuantity: { type: integer, minimum: 0 }
+            retrievedAt: { type: string, format: date-time }
+            sourceOfTruth: { type: string, const: external-platform }
+
+    ExternalRedemptionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 128, description: Optional when supplied in the path }
+        externalUserId: { type: string, minLength: 1, maxLength: 128 }
+        assetId: { type: string, minLength: 1, maxLength: 200, description: Optional when supplied in the path }
+        tplId: { type: integer, format: int64, minimum: 1, description: Haiwen copyright template ID }
+        num: { type: integer, minimum: 1, maximum: 100, description: Number of assets to write off }
+        requestNo: { type: string, minLength: 1, maxLength: 128, description: Haiwen idempotency number }
+        serialNumber: { type: string, minLength: 1, maxLength: 128 }
+        serialNo: { type: string, minLength: 1, maxLength: 128, description: Compatibility alias for serialNumber }
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+
+    ExternalAssetRedemption:
+      type: object
+      required: [id, userId, externalUserId, assetId, serialNumber, quantity, status, redeemedAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        externalUserId: { type: string }
+        assetId: { type: string }
+        serialNumber: { type: string }
+        requestNo: { type: string }
+        tplId: { type: integer, format: int64, minimum: 1 }
+        num: { type: integer, minimum: 1, maximum: 100 }
+        externalTxId: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        status: { type: string, enum: [completed] }
+        requestId: { type: string }
+        redeemedAt: { type: string, format: date-time }
+
+    ExternalRedemptionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [redemption, id, assetId, serialNumber, status]
+          properties:
+            redemption: { $ref: '#/components/schemas/ExternalAssetRedemption' }
+            id: { type: string }
+            assetId: { type: string }
+            serialNumber: { type: string }
+            status: { type: string }

@@ -7,24 +7,30 @@ import (
 )
 
 type State struct {
-	Works             []domain.Work
-	Assets            []domain.HAPWAsset
-	Exercises         []domain.AssetExercise
-	CLIP              domain.CLIPAccount
-	CLIPTransactions  []domain.CLIPTransaction
-	GenerationAccount domain.GenerationAccount
-	Redemptions       []domain.HAPWRedemption
-	Generations       []domain.Generation
-	Profile           domain.Profile
-	Conversions       []domain.Conversion
-	HAPWExchanges     []domain.HAPWExchange
-	Platforms         []domain.ExternalPlatform
-	AssetSources      []domain.AssetSource
-	AssetSyncRuns     []domain.AssetSyncRun
-	CLIPTreasury      domain.CLIPTreasury
-	DistributionRules []domain.CLIPDistributionRule
-	Distributions     []domain.CLIPDistribution
-	Session           domain.SessionPolicy
+	Works                  []domain.Work
+	Assets                 []domain.HAPWAsset
+	Exercises              []domain.AssetExercise
+	CLIP                   domain.CLIPAccount
+	CLIPTransactions       []domain.CLIPTransaction
+	GenerationAccount      domain.GenerationAccount
+	Redemptions            []domain.HAPWRedemption
+	Generations            []domain.Generation
+	Profile                domain.Profile
+	Conversions            []domain.Conversion
+	HAPWExchanges          []domain.HAPWExchange
+	Platforms              []domain.ExternalPlatform
+	AssetSources           []domain.AssetSource
+	AssetSyncRuns          []domain.AssetSyncRun
+	CLIPTreasury           domain.CLIPTreasury
+	DistributionRules      []domain.CLIPDistributionRule
+	Distributions          []domain.CLIPDistribution
+	WalletAssets           []domain.WalletAsset
+	AirdropRules           []domain.AirdropRule
+	Airdrops               []domain.AirdropRecord
+	Session                domain.SessionPolicy
+	VerificationChallenges []domain.VerificationChallenge
+	Bindings               []domain.ExternalPlatformBinding
+	ExternalRedemptions    []domain.ExternalAssetRedemption
 }
 
 type Memory struct {
@@ -68,5 +74,11 @@ func cloneState(state State) State {
 	clone.AssetSyncRuns = append([]domain.AssetSyncRun(nil), state.AssetSyncRuns...)
 	clone.DistributionRules = append([]domain.CLIPDistributionRule(nil), state.DistributionRules...)
 	clone.Distributions = append([]domain.CLIPDistribution(nil), state.Distributions...)
+	clone.WalletAssets = append([]domain.WalletAsset(nil), state.WalletAssets...)
+	clone.AirdropRules = append([]domain.AirdropRule(nil), state.AirdropRules...)
+	clone.Airdrops = append([]domain.AirdropRecord(nil), state.Airdrops...)
+	clone.VerificationChallenges = append([]domain.VerificationChallenge(nil), state.VerificationChallenges...)
+	clone.Bindings = append([]domain.ExternalPlatformBinding(nil), state.Bindings...)
+	clone.ExternalRedemptions = append([]domain.ExternalAssetRedemption(nil), state.ExternalRedemptions...)
 	return clone
 }

@@ -16,6 +16,10 @@ Clipli 不托管用户私钥、助记词或钱包资产。任何与钱包、区�
 
 本文使用“当前原型”描述已经在演示产品中实现的行为，使用“正式网络前”描述仍需经技术、业务与法律确认的事项。若创作额度与 CLIP 记录存在差异，以经版本化披露的正式规则为准。
 
+## BNB 合约补充（2026-09-02）
+
+本稿中关于固定总量、无增发和 Ethereum/未定网络的旧描述由 [docs/BNB_TOKEN.md](docs/BNB_TOKEN.md) 的 BNB Smart Chain 方案取代：CLIP 硬顶为 1,000,000,000，部署时铸造 900,000,000，最多 100,000,000 由带指标快照、Timelock 延迟、Guardian 取消和年度上限的 `AdaptiveMinter` 释放。`ClipAirdrop` 使用资产快照 Merkle root，DEX 生产兑换应接入 PancakeSwap 等经审计的 BNB 部署；本仓库的 `ClipliDexPair` 只用于本地测试。
+
 ---
 
 ## 目录

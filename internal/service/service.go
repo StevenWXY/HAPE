@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/StevenWXY/HAPE/internal/domain"
@@ -25,12 +26,39 @@ func apiError(status int, code, message string) error {
 }
 
 type Service struct {
-	store *store.Memory
-	now   func() time.Time
+	store      *store.Memory
+	now        func() time.Time
+	platform   ExternalPlatformClient
+	externalMu sync.Mutex
 }
 
-func New(memory *store.Memory) *Service {
-	return &Service{store: memory, now: time.Now}
+func New(memory *store.Memory, platforms ...ExternalPlatformClient) *Service {
+	var platform ExternalPlatformClient
+	if len(platforms) > 0 {
+		platform = platforms[0]
+	}
+	return NewWithExternalPlatform(memory, platform)
+}
+
+// NewWithExternalPlatform builds a service with an explicitly configured
+// partner adapter. Keeping the adapter behind this boundary lets integration
+// testing use a fake client and production use the HTTP adapter without
+// changing handlers or business rules.
+func NewWithExternalPlatform(memory *store.Memory, platform ExternalPlatformClient) *Service {
+	if platform == nil {
+		platform = NewDemoExternalPlatform()
+	}
+	return &Service{store: memory, now: time.Now, platform: platform}
+}
+
+// SetExternalPlatform is intended for startup wiring and integration tests.
+// It does not mutate any persisted Clipli state.
+func (s *Service) SetExternalPlatform(platform ExternalPlatformClient) {
+	if platform != nil {
+		s.externalMu.Lock()
+		defer s.externalMu.Unlock()
+		s.platform = platform
+	}
 }
 
 func (s *Service) Snapshot() store.State {
@@ -271,6 +299,71 @@ type RedemptionInput struct {
 	Accepted  bool   `json:"accepted"`
 }
 
+type WalletConnectInput struct {
+	Provider string `json:"provider"`
+	Address  string `json:"address"`
+	ChainID  string `json:"chainId"`
+}
+
+type AirdropInput struct {
+	RequestID     string `json:"requestId"`
+	RuleCode      string `json:"ruleCode"`
+	WalletAddress string `json:"walletAddress"`
+	ChainID       string `json:"chainId"`
+	AssetID       string `json:"assetId"`
+	Amount        int    `json:"amount"`
+	Token         string `json:"token"`
+}
+
+type AirdropResultInput struct {
+	Status        string `json:"status"`
+	TxHash        string `json:"txHash"`
+	ExecutorRef   string `json:"executorRef"`
+	FailureReason string `json:"failureReason"`
+}
+
+// BNBChainConfig describes the networks accepted by the Clipli airdrop
+// workflow while the BEP-20 contract is still being prepared.
+type BNBChainConfig struct {
+	ChainID          string `json:"chainId"`
+	Name             string `json:"name"`
+	Network          string `json:"network"`
+	NativeCurrency   string `json:"nativeCurrency"`
+	ContractDeployed bool   `json:"contractDeployed"`
+	SimulationOnly   bool   `json:"simulationOnly"`
+}
+
+func BNBChainConfigs() []BNBChainConfig {
+	return []BNBChainConfig{
+		{ChainID: "0x61", Name: "BNB Smart Chain Testnet", Network: "testnet", NativeCurrency: "tBNB", ContractDeployed: false, SimulationOnly: true},
+		{ChainID: "0x38", Name: "BNB Smart Chain Mainnet", Network: "mainnet", NativeCurrency: "BNB", ContractDeployed: false, SimulationOnly: true},
+	}
+}
+
+func NormalizeBNBChain(chainID string) string {
+	switch strings.ToLower(strings.TrimSpace(chainID)) {
+	case "0x61", "97":
+		return "0x61"
+	case "0x38", "56":
+		return "0x38"
+	default:
+		return ""
+	}
+}
+
+func IsBNBChain(chainID string) bool { return NormalizeBNBChain(chainID) != "" }
+
+type AirdropEligibility struct {
+	Eligible      bool   `json:"eligible"`
+	RuleCode      string `json:"ruleCode"`
+	WalletAddress string `json:"walletAddress"`
+	AssetID       string `json:"assetId,omitempty"`
+	Amount        int    `json:"amount"`
+	Token         string `json:"token"`
+	Reason        string `json:"reason"`
+	ExistingID    string `json:"existingAirdropId,omitempty"`
+}
+
 type RedemptionResult struct {
 	Redemption        domain.HAPWRedemption    `json:"redemption"`
 	GenerationAccount domain.GenerationAccount `json:"generationAccount"`
@@ -286,6 +379,9 @@ func (s *Service) Redeem(input RedemptionInput) (RedemptionResult, bool, error) 
 		}
 		for _, item := range state.Redemptions {
 			if item.RequestID == input.RequestID {
+				if item.AssetID != strings.TrimSpace(input.AssetID) || !input.Accepted {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another redemption")
+				}
 				syncGenerationAccount(state)
 				result = RedemptionResult{Redemption: item, GenerationAccount: state.GenerationAccount, ClipBalance: state.CLIP.Balance}
 				idempotent = true
@@ -314,6 +410,9 @@ func (s *Service) Redeem(input RedemptionInput) (RedemptionResult, bool, error) 
 		asset.RedemptionStatus, asset.Transferable, asset.ExchangeAvailable = "redeemed", false, false
 		asset.Status, asset.StatusEn, asset.StatusKo = "已核销", "Redeemed", "상각 완료"
 		state.Redemptions = prepend(redemption, state.Redemptions)
+		if validWalletAddress(state.Profile.Wallet) {
+			queueRedemptionAirdrop(state, redemption, state.Profile.Wallet, state.Profile.WalletChainID, now)
+		}
 		state.CLIPTransactions = prepend(domain.CLIPTransaction{
 			ID: uniqueID("clip-grant", now), TypeCode: "redemptionGrant", Type: "HAPW 核销领取", TypeEn: "HAPW redemption grant", TypeKo: "HAPW 상각 지급", Amount: grant,
 			Counterparty: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameEn), CounterpartyKo: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameKo),
@@ -349,6 +448,9 @@ func (s *Service) Generate(input GenerationInput) (GenerationResult, bool, error
 		}
 		for _, item := range state.Generations {
 			if item.RequestID == input.RequestID {
+				if item.AssetID != strings.TrimSpace(input.AssetID) || item.Duration != input.Duration || item.Quality != strings.TrimSpace(input.Quality) || !input.Accepted {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another generation")
+				}
 				syncGenerationAccount(state)
 				result = GenerationResult{Generation: item, GenerationAccount: state.GenerationAccount, ClipBalance: state.CLIP.Balance}
 				idempotent = true
@@ -419,6 +521,9 @@ func (s *Service) Convert(input ConversionInput) (domain.Conversion, bool, error
 		}
 		for _, item := range state.Conversions {
 			if item.RequestID == input.RequestID {
+				if item.AssetID != strings.TrimSpace(input.AssetID) || item.Region != strings.TrimSpace(input.Region) || item.Days != input.Days || !input.Accepted {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another conversion")
+				}
 				result, idempotent = item, true
 				return nil
 			}
@@ -462,6 +567,9 @@ func (s *Service) Exercise(input ExerciseInput) (domain.AssetExercise, bool, err
 		}
 		for _, item := range state.Exercises {
 			if item.RequestID == input.RequestID {
+				if item.AssetID != strings.TrimSpace(input.AssetID) || item.PlatformCode != strings.TrimSpace(input.PlatformCode) || !input.Accepted {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another exercise")
+				}
 				result, idempotent = item, true
 				return nil
 			}
@@ -509,6 +617,9 @@ func (s *Service) Exchange(input ExchangeInput) (ExchangeResult, bool, error) {
 		}
 		for _, item := range state.HAPWExchanges {
 			if item.RequestID == input.RequestID {
+				if item.AssetID != strings.TrimSpace(input.AssetID) || !input.Accepted {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another exchange")
+				}
 				result, idempotent = ExchangeResult{Exchange: item, ClipBalance: state.CLIP.Balance}, true
 				return nil
 			}
@@ -542,18 +653,345 @@ func (s *Service) Exchange(input ExchangeInput) (ExchangeResult, bool, error) {
 	return result, idempotent, err
 }
 
-func (s *Service) ConnectWallet(provider string) (domain.Profile, error) {
+func (s *Service) ConnectWallet(input WalletConnectInput) (domain.Profile, error) {
 	allowed := map[string]bool{"MetaMask": true, "Coinbase Wallet": true, "WalletConnect": true, "Venly": true}
-	if !allowed[provider] {
+	if !allowed[input.Provider] {
 		return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_provider", "Unsupported wallet provider")
+	}
+	address := normalizeWalletAddress(input.Address)
+	if address == "" {
+		var profile domain.Profile
+		err := s.store.Update(func(state *store.State) error {
+			state.Profile.WalletProvider = input.Provider
+			state.Profile.WalletStatus = "provider-selected"
+			profile = state.Profile
+			return nil
+		})
+		return profile, err
+	}
+	if !validWalletAddress(address) {
+		return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
+	}
+	chainID := NormalizeBNBChain(input.ChainID)
+	if chainID == "" {
+		return domain.Profile{}, apiError(http.StatusBadRequest, "unsupported_chain", "Clipli wallet operations currently support BNB Smart Chain Testnet (0x61) and Mainnet (0x38)")
 	}
 	var profile domain.Profile
 	err := s.store.Update(func(state *store.State) error {
-		state.Profile.WalletProvider, state.Profile.Wallet = provider, "0x7E…4A91"
+		now := s.now().UTC().Format(time.RFC3339)
+		state.Profile.WalletProvider, state.Profile.Wallet = input.Provider, address
+		state.Profile.WalletChainID, state.Profile.WalletStatus, state.Profile.WalletConnectedAt = chainID, "connected", now
 		profile = state.Profile
 		return nil
 	})
 	return profile, err
+}
+
+func (s *Service) DisconnectWallet() domain.Profile {
+	var profile domain.Profile
+	_ = s.store.Update(func(state *store.State) error {
+		state.Profile.Wallet, state.Profile.WalletProvider, state.Profile.WalletChainID = "", "", ""
+		state.Profile.WalletStatus, state.Profile.WalletConnectedAt = "disconnected", ""
+		profile = state.Profile
+		return nil
+	})
+	return profile
+}
+
+func (s *Service) WalletAssets(address string) ([]domain.WalletAsset, error) {
+	address = normalizeWalletAddress(address)
+	if !validWalletAddress(address) {
+		return nil, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
+	}
+	state := s.Snapshot()
+	items := make([]domain.WalletAsset, 0)
+	seen := map[string]bool{}
+	for _, item := range state.WalletAssets {
+		if strings.EqualFold(item.WalletAddress, address) {
+			items = append(items, item)
+			seen[item.AssetID] = true
+		}
+	}
+	for _, asset := range state.Assets {
+		if !strings.EqualFold(asset.Owner, address) || seen[asset.ID] {
+			continue
+		}
+		items = append(items, walletAssetFromHAPW(asset, address))
+	}
+	return items, nil
+}
+
+func (s *Service) AirdropRules() []domain.AirdropRule {
+	return s.Snapshot().AirdropRules
+}
+
+func (s *Service) Airdrops(address, status string) ([]domain.AirdropRecord, error) {
+	if address != "" {
+		address = normalizeWalletAddress(address)
+		if !validWalletAddress(address) {
+			return nil, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
+		}
+	}
+	state := s.Snapshot()
+	items := make([]domain.AirdropRecord, 0)
+	for _, item := range state.Airdrops {
+		if address != "" && !strings.EqualFold(item.WalletAddress, address) {
+			continue
+		}
+		if status != "" && item.Status != status {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Service) AirdropEligibility(ruleCode, address, assetID string) (AirdropEligibility, error) {
+	address = normalizeWalletAddress(address)
+	if !validWalletAddress(address) {
+		return AirdropEligibility{}, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
+	}
+	state := s.Snapshot()
+	rule, ok := findAirdropRule(state.AirdropRules, ruleCode)
+	if !ok || !rule.Enabled {
+		return AirdropEligibility{RuleCode: ruleCode, WalletAddress: address, Token: "CLIP", Reason: "airdrop_rule_disabled"}, nil
+	}
+	eligibility := AirdropEligibility{RuleCode: rule.Code, WalletAddress: address, AssetID: assetID, Token: rule.Token, Reason: "eligible"}
+	if rule.Code == "hapw_redemption" {
+		for _, redemption := range state.Redemptions {
+			if redemption.AssetID == assetID {
+				eligibility.Amount = redemption.ClipGranted
+				for _, existing := range state.Airdrops {
+					if existing.RuleCode == rule.Code && existing.AssetID == assetID && strings.EqualFold(existing.WalletAddress, address) && existing.Status != "failed" {
+						eligibility.ExistingID = existing.ID
+						eligibility.Reason = "airdrop_already_created"
+						return eligibility, nil
+					}
+				}
+				eligibility.Eligible = true
+				return eligibility, nil
+			}
+		}
+		eligibility.Reason = "hapw_redemption_required"
+		return eligibility, nil
+	}
+	eligibility.Reason = "rule_requires_manual_amount"
+	return eligibility, nil
+}
+
+func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool, error) {
+	var result domain.AirdropRecord
+	idempotent := false
+	address := normalizeWalletAddress(input.WalletAddress)
+	if !validWalletAddress(address) {
+		return result, false, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
+	}
+	if !validRequestID(input.RequestID) {
+		return result, false, apiError(http.StatusBadRequest, "invalid_request_id", "A valid operation id is required")
+	}
+	chainID := NormalizeBNBChain(input.ChainID)
+	if chainID == "" {
+		return result, false, apiError(http.StatusBadRequest, "unsupported_chain", "Airdrops are currently limited to BNB Smart Chain Testnet (0x61) and Mainnet (0x38)")
+	}
+	err := s.store.Update(func(state *store.State) error {
+		rule, ok := findAirdropRule(state.AirdropRules, input.RuleCode)
+		if !ok || !rule.Enabled {
+			return apiError(http.StatusBadRequest, "airdrop_rule_disabled", "The airdrop rule is unavailable")
+		}
+		if input.Token != "" && !strings.EqualFold(strings.TrimSpace(input.Token), rule.Token) {
+			return apiError(http.StatusBadRequest, "invalid_airdrop_token", "The airdrop token must match the configured rule")
+		}
+		amount := input.Amount
+		allocationSource := "treasury-reservation"
+		if rule.Code == "hapw_redemption" {
+			allocationSource = "redemption-entitlement"
+			amount = 0
+			for _, redemption := range state.Redemptions {
+				if redemption.AssetID == input.AssetID {
+					amount = redemption.ClipGranted
+					break
+				}
+			}
+			if amount <= 0 {
+				return apiError(http.StatusBadRequest, "hapw_redemption_required", "The wallet is not eligible until the HAPW is redeemed")
+			}
+		}
+		if amount <= 0 || amount > 1000000000 {
+			return apiError(http.StatusBadRequest, "invalid_airdrop_amount", "A positive airdrop amount is required")
+		}
+		token := rule.Token
+		for _, item := range state.Airdrops {
+			if item.RequestID == input.RequestID {
+				if item.Status == "failed" {
+					return apiError(http.StatusConflict, "request_id_reused", "A failed airdrop must be recreated with a new requestId")
+				}
+				if item.RuleCode != rule.Code || !strings.EqualFold(item.WalletAddress, address) || item.ChainID != chainID || item.AssetID != strings.TrimSpace(input.AssetID) || item.Amount != amount || !strings.EqualFold(item.Token, token) {
+					return apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another airdrop")
+				}
+				result, idempotent = item, true
+				return nil
+			}
+			if rule.Code == "hapw_redemption" && item.RuleCode == rule.Code && item.AssetID == strings.TrimSpace(input.AssetID) && strings.EqualFold(item.WalletAddress, address) && item.Status != "failed" {
+				return apiError(http.StatusConflict, "airdrop_already_created", "An active airdrop already exists for this wallet and redemption")
+			}
+		}
+		if allocationSource == "treasury-reservation" {
+			if state.CLIPTreasury.TreasuryBalance < amount {
+				return apiError(http.StatusServiceUnavailable, "clip_treasury_insufficient", "The platform treasury cannot reserve this airdrop")
+			}
+			state.CLIPTreasury.TreasuryBalance -= amount
+			state.CLIPTreasury.LedgerOutstanding += amount
+			state.CLIPTreasury.TotalDistributed += amount
+		}
+		now := s.now().UTC().Format(time.RFC3339)
+		result = domain.AirdropRecord{ID: uniqueID("airdrop", s.now()), RequestID: input.RequestID, RuleCode: rule.Code, WalletAddress: address, ChainID: chainID, AssetID: strings.TrimSpace(input.AssetID), Token: token, Amount: amount, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: allocationSource, CreatedAt: now, UpdatedAt: now}
+		state.Airdrops = prepend(result, state.Airdrops)
+		return nil
+	})
+	return result, idempotent, err
+}
+
+// SimulateAirdrop exercises the queued/confirmed state transition without
+// broadcasting a blockchain transaction. The receipt is deliberately not a
+// 0x hash so it cannot be mistaken for an on-chain transaction.
+func (s *Service) SimulateAirdrop(id, chainID string) (domain.AirdropRecord, error) {
+	var result domain.AirdropRecord
+	chainID = NormalizeBNBChain(chainID)
+	if chainID == "" {
+		return result, apiError(http.StatusBadRequest, "unsupported_chain", "Choose BNB Smart Chain Testnet (0x61) or Mainnet (0x38)")
+	}
+	err := s.store.Update(func(state *store.State) error {
+		index := -1
+		for i := range state.Airdrops {
+			if state.Airdrops[i].ID == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return apiError(http.StatusNotFound, "airdrop_not_found", "Airdrop record not found")
+		}
+		item := &state.Airdrops[index]
+		if item.Status == "failed" {
+			return apiError(http.StatusConflict, "airdrop_failed", "A failed airdrop must be recreated before simulation")
+		}
+		if item.Status == "confirmed" && item.Simulated {
+			result = *item
+			return nil
+		}
+		if item.Status == "confirmed" && !item.Simulated {
+			return apiError(http.StatusConflict, "airdrop_already_confirmed", "A confirmed external transaction cannot be simulated")
+		}
+		now := s.now().UTC().Format(time.RFC3339)
+		item.Status = "confirmed"
+		item.ChainID = chainID
+		item.Network = chainID
+		item.Simulated = true
+		item.ExecutionMode = "simulated-bnb"
+		item.ExecutorRef = "clipli-simulator"
+		item.TxHash = "sim-bnb-" + item.ID
+		item.FailureReason = ""
+		item.UpdatedAt = now
+		result = *item
+		return nil
+	})
+	return result, err
+}
+
+func (s *Service) UpdateAirdrop(id string, input AirdropResultInput) (domain.AirdropRecord, error) {
+	var result domain.AirdropRecord
+	err := s.store.Update(func(state *store.State) error {
+		index := -1
+		for i := range state.Airdrops {
+			if state.Airdrops[i].ID == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return apiError(http.StatusNotFound, "airdrop_not_found", "Airdrop record not found")
+		}
+		if input.Status != "submitted" && input.Status != "confirmed" && input.Status != "failed" {
+			return apiError(http.StatusBadRequest, "invalid_airdrop_status", "Airdrop status must be submitted, confirmed, or failed")
+		}
+		item := &state.Airdrops[index]
+		if item.Status == "confirmed" {
+			result = *item
+			return nil
+		}
+		if item.Status == "failed" {
+			return apiError(http.StatusConflict, "airdrop_failed_terminal", "A failed airdrop must be recreated with a new requestId")
+		}
+		if (input.Status == "submitted" || input.Status == "confirmed") && !validTransactionHash(input.TxHash) {
+			return apiError(http.StatusBadRequest, "invalid_transaction_hash", "A valid BNB transaction hash is required")
+		}
+		if input.Status == "failed" && strings.TrimSpace(input.FailureReason) == "" {
+			return apiError(http.StatusBadRequest, "failure_reason_required", "A failure reason is required")
+		}
+		if input.Status == "failed" && item.Status != "failed" && item.AllocationSource == "treasury-reservation" {
+			state.CLIPTreasury.TreasuryBalance += item.Amount
+			state.CLIPTreasury.LedgerOutstanding -= item.Amount
+			if state.CLIPTreasury.LedgerOutstanding < 0 {
+				state.CLIPTreasury.LedgerOutstanding = 0
+			}
+			state.CLIPTreasury.TotalDistributed -= item.Amount
+		}
+		item.Status, item.TxHash, item.ExecutorRef, item.FailureReason = input.Status, input.TxHash, input.ExecutorRef, input.FailureReason
+		item.UpdatedAt = s.now().UTC().Format(time.RFC3339)
+		result = *item
+		return nil
+	})
+	return result, err
+}
+
+func queueRedemptionAirdrop(state *store.State, redemption domain.HAPWRedemption, address, chainID string, now time.Time) {
+	for _, item := range state.Airdrops {
+		if item.RuleCode == "hapw_redemption" && item.AssetID == redemption.AssetID && strings.EqualFold(item.WalletAddress, address) && item.Status != "failed" {
+			return
+		}
+	}
+	createdAt := now.UTC().Format(time.RFC3339)
+	state.Airdrops = prepend(domain.AirdropRecord{ID: uniqueID("airdrop", now), RequestID: "airdrop-" + redemption.RequestID, RuleCode: "hapw_redemption", WalletAddress: address, ChainID: chainID, AssetID: redemption.AssetID, Token: "CLIP", Amount: redemption.ClipGranted, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: "redemption-entitlement", CreatedAt: createdAt, UpdatedAt: createdAt}, state.Airdrops)
+}
+
+func walletAssetFromHAPW(asset domain.HAPWAsset, address string) domain.WalletAsset {
+	return domain.WalletAsset{ID: "wallet-asset-" + asset.ID, WalletAddress: address, AssetID: asset.ID, TokenID: asset.TokenID, Name: asset.Name, Balance: "1", Standard: asset.Provenance.TokenStandard, SourceCode: asset.External.ProviderCode, ExternalAssetID: asset.External.ProviderAssetID, ExternalURL: asset.External.AssetURL, SyncStatus: asset.External.SyncStatus, LastSyncedAt: asset.External.LastSyncedAt, RedemptionStatus: asset.RedemptionStatus, CanRedeem: asset.RedemptionStatus == "available", CanExercise: asset.Transferable}
+}
+
+func findAirdropRule(rules []domain.AirdropRule, code string) (domain.AirdropRule, bool) {
+	for _, rule := range rules {
+		if rule.Code == code {
+			return rule, true
+		}
+	}
+	return domain.AirdropRule{}, false
+}
+
+func normalizeWalletAddress(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+
+func validWalletAddress(value string) bool {
+	if len(value) != 42 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	for _, char := range value[2:] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validTransactionHash(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	for _, char := range value[2:] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) SetOverseasAccount(account string) (domain.Profile, error) {

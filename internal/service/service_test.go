@@ -1,11 +1,146 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/StevenWXY/HAPE/internal/domain"
 	"github.com/StevenWXY/HAPE/internal/store"
 )
+
+type integrationRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f integrationRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
+	var requests []*http.Request
+	client := &http.Client{Transport: integrationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request)
+		var body string
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/bind/sms"):
+			body = `{"code":0,"message":"success","data":{},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/bind"):
+			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","bound":true,"boundAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/assets/count"):
+			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","list":[{"tplId":100001,"count":3}]},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/write-off"):
+			body = `{"code":0,"message":"success","data":{"requestNo":"wo-1","externalUserId":"external-1","tplId":100001,"num":1,"status":"SUCCESS","writeOffAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
+		default:
+			body = `{"code":0,"message":"success","data":{},"msg":"success"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+	})}
+	platform := NewHTTPExternalPlatform("https://partner.example/api", client)
+	platform.AppID = "100001"
+	platform.AppKey = "secret"
+	dispatch, err := platform.SendVerificationCode(context.Background(), VerificationCodeRequest{UserID: "u-1", ExternalUserID: "external-1", Phone: "13800138000"})
+	if err != nil {
+		t.Fatalf("dispatch=%#v err=%v", dispatch, err)
+	}
+	binding, err := platform.BindUser(context.Background(), BindUserRequest{UserID: "u-1", ExternalUserID: "external-1", Phone: "13800138000", Code: "123456"})
+	if err != nil || binding.ExternalUserID != "external-1" {
+		t.Fatalf("binding=%#v err=%v", binding, err)
+	}
+	assets, err := platform.ListAssetCounts(context.Background(), "external-1", []int64{100001})
+	if err != nil || len(assets) != 1 || assets[0].AssetID != "100001" || assets[0].Quantity != 3 {
+		t.Fatalf("assets=%#v err=%v", assets, err)
+	}
+	redeemed, err := platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-1"})
+	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 4 {
+		t.Fatalf("redeemed=%#v requests=%d err=%v", redeemed, len(requests), err)
+	}
+	if requests[0].Header.Get("x-app-id") != "100001" || requests[0].Header.Get("x-app-key") != "secret" {
+		t.Fatalf("Haiwen credentials missing: appid=%q appkey=%q", requests[0].Header.Get("x-app-id"), requests[0].Header.Get("x-app-key"))
+	}
+	if requests[2].URL.Query().Get("externalUserId") != "external-1" || requests[2].URL.Query().Get("tplIds") != "100001" {
+		t.Fatalf("asset count query=%s", requests[2].URL.RawQuery)
+	}
+}
+
+func TestHTTPExternalPlatformMapsHaiwenBusinessErrors(t *testing.T) {
+	client := &http.Client{Transport: integrationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"code":422,"message":"可核销资产不足","data":null,"msg":"可核销资产不足"}`)), Header: make(http.Header), Request: request}, nil
+	})}
+	platform := NewHTTPExternalPlatform("https://partner.example/api", client)
+	platform.AppID, platform.AppKey = "100001", "secret"
+	_, err := platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-2"})
+	var platformErr *PlatformError
+	if !errors.As(err, &platformErr) || platformErr.Status != http.StatusUnprocessableEntity || platformErr.Code != "external_assets_insufficient" {
+		t.Fatalf("error=%#v", err)
+	}
+}
+
+type integrationFake struct {
+	sends, binds, lists, redeems int
+}
+
+func (f *integrationFake) SendVerificationCode(context.Context, VerificationCodeRequest) (VerificationCodeDispatch, error) {
+	f.sends++
+	return VerificationCodeDispatch{DeliveryID: "delivery-1", ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339), Status: "sent"}, nil
+}
+
+func (f *integrationFake) BindUser(_ context.Context, input BindUserRequest) (ExternalBindingResult, error) {
+	f.binds++
+	if input.Code != "654321" {
+		return ExternalBindingResult{}, &PlatformError{Status: 400, Code: "verification_code_invalid", Message: "bad code"}
+	}
+	return ExternalBindingResult{ExternalUserID: "partner-user-1", BindingID: "partner-binding-1", Status: "bound"}, nil
+}
+
+func (f *integrationFake) ListAssets(context.Context, string) ([]domain.ExternalAssetHolding, error) {
+	f.lists++
+	return []domain.ExternalAssetHolding{{AssetID: "external-asset-1", Quantity: 2}}, nil
+}
+
+func (f *integrationFake) RedeemAsset(context.Context, ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
+	f.redeems++
+	return ExternalRedemptionResult{ExternalTxID: "partner-tx-1", Status: "completed", Quantity: 1}, nil
+}
+
+func TestExternalPlatformIntegrationFlow(t *testing.T) {
+	fake := &integrationFake{}
+	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), fake)
+	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", Phone: "138-0013-8000", RequestID: "verify-clip-user-1"})
+	if err != nil || sent.Challenge.ID == "" || sent.Challenge.Phone != "13800138000" || sent.Challenge.PhoneMasked != "*******8000" {
+		t.Fatalf("send result=%#v err=%v", sent, err)
+	}
+	binding, idempotent, err := svc.BindUser(BindUserInput{UserID: "clip-user-1", Phone: "13800138000", Code: "654321", VerificationID: sent.Challenge.ID, RequestID: "bind-clip-user-1"})
+	if err != nil || idempotent || binding.Binding.ExternalUserID != "partner-user-1" {
+		t.Fatalf("bind result=%#v idempotent=%v err=%v", binding, idempotent, err)
+	}
+	// The second step may submit only the code; the phone is recovered from
+	// the pending verification challenge.
+	secondSent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-2", Phone: "13900139000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.BindUser(BindUserInput{UserID: "clip-user-2", Code: "654321", VerificationID: secondSent.Challenge.ID}); err != nil {
+		t.Fatalf("bind without phone: %v", err)
+	}
+	holdings, err := svc.UserAssets("clip-user-1")
+	if err != nil || holdings.TotalQuantity != 2 || fake.lists != 1 {
+		t.Fatalf("holdings=%#v err=%v", holdings, err)
+	}
+	redemption, idempotent, err := svc.RedeemExternalAsset(RedeemExternalAssetInput{UserID: "clip-user-1", AssetID: "external-asset-1", SerialNumber: "serial-0001", RequestID: "redeem-clip-user-1"})
+	if err != nil || idempotent || redemption.Redemption.ExternalTxID != "partner-tx-1" {
+		t.Fatalf("redemption=%#v idempotent=%v err=%v", redemption, idempotent, err)
+	}
+	retry, idempotent, err := svc.RedeemExternalAsset(RedeemExternalAssetInput{UserID: "clip-user-1", AssetID: "external-asset-1", SerialNo: "serial-0001", RequestID: "redeem-clip-user-1"})
+	if err != nil || !idempotent || retry.Redemption.ID != redemption.Redemption.ID || fake.redeems != 1 {
+		t.Fatalf("retry=%#v idempotent=%v redeems=%d err=%v", retry, idempotent, fake.redeems, err)
+	}
+	if _, _, err := svc.RedeemExternalAsset(RedeemExternalAssetInput{UserID: "clip-user-1", AssetID: "other-asset", SerialNumber: "serial-0001"}); err == nil {
+		t.Fatal("expected serial reuse conflict")
+	}
+}
 
 func newTestService() *Service {
 	service := New(store.NewMemory(store.SeedState()))
@@ -80,4 +215,147 @@ func TestListAssetsFiltersAndPaginates(t *testing.T) {
 	if result.Items[0].ID != "asset-2048" {
 		t.Fatalf("first asset = %s", result.Items[0].ID)
 	}
+}
+
+func TestWalletConnectionAndAssetSnapshot(t *testing.T) {
+	service := newTestService()
+	address := "0x1111111111111111111111111111111111111111"
+	profile, err := service.ConnectWallet(WalletConnectInput{Provider: "MetaMask", Address: address, ChainID: "0x61"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Wallet != address || profile.WalletStatus != "connected" || profile.WalletChainID != "0x61" {
+		t.Fatalf("profile = %#v", profile)
+	}
+	assets, err := service.WalletAssets(address)
+	if err != nil || len(assets) != 1 || assets[0].AssetID != "asset-2048" || !assets[0].CanRedeem {
+		t.Fatalf("wallet assets = %#v err=%v", assets, err)
+	}
+}
+
+func TestRedemptionQueuesWalletAirdrop(t *testing.T) {
+	service := newTestService()
+	address := "0x1111111111111111111111111111111111111111"
+	if _, err := service.ConnectWallet(WalletConnectInput{Provider: "MetaMask", Address: address, ChainID: "0x61"}); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := service.Redeem(RedemptionInput{RequestID: "airdrop-redeem-2048", AssetID: "asset-2048", Accepted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := service.Airdrops(address, "queued")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("airdrops = %#v err=%v", items, err)
+	}
+	if items[0].AssetID != result.Redemption.AssetID || items[0].Amount != result.Redemption.ClipGranted || items[0].AllocationSource != "redemption-entitlement" {
+		t.Fatalf("airdrop = %#v", items[0])
+	}
+	eligibility, err := service.AirdropEligibility("hapw_redemption", address, "asset-2048")
+	if err != nil || eligibility.Eligible || eligibility.Reason != "airdrop_already_created" {
+		t.Fatalf("eligibility = %#v err=%v", eligibility, err)
+	}
+}
+
+func TestAdminAirdropReservesAndRefundsTreasury(t *testing.T) {
+	service := newTestService()
+	address := "0x2222222222222222222222222222222222222222"
+	before := service.Snapshot().CLIPTreasury
+	item, idempotent, err := service.CreateAirdrop(AirdropInput{RequestID: "manual-airdrop-1", RuleCode: "admin_approved", WalletAddress: address, ChainID: "0x61", Amount: 25})
+	if err != nil || idempotent || item.Status != "queued" || item.Amount != 25 || item.AllocationSource != "treasury-reservation" {
+		t.Fatalf("item=%#v idempotent=%v err=%v", item, idempotent, err)
+	}
+	afterQueue := service.Snapshot().CLIPTreasury
+	if afterQueue.TreasuryBalance != before.TreasuryBalance-25 || afterQueue.LedgerOutstanding != before.LedgerOutstanding+25 {
+		t.Fatalf("treasury after queue before=%#v after=%#v", before, afterQueue)
+	}
+	updated, err := service.UpdateAirdrop(item.ID, AirdropResultInput{Status: "failed", FailureReason: "executor rejected"})
+	if err != nil || updated.Status != "failed" {
+		t.Fatalf("updated=%#v err=%v", updated, err)
+	}
+	afterFailure := service.Snapshot().CLIPTreasury
+	if afterFailure.TreasuryBalance != before.TreasuryBalance || afterFailure.LedgerOutstanding != before.LedgerOutstanding {
+		t.Fatalf("treasury was not refunded: before=%#v after=%#v", before, afterFailure)
+	}
+	if _, err := service.UpdateAirdrop(item.ID, AirdropResultInput{Status: "confirmed", TxHash: "0x" + strings.Repeat("a", 64)}); apiErrorCode(err) != "airdrop_failed_terminal" {
+		t.Fatalf("failed airdrop accepted a terminal-state transition: %v", err)
+	}
+}
+
+func TestMutationRequestIDsRejectDifferentPayloads(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Service) error
+	}{
+		{name: "redemption", run: func(s *Service) error {
+			if _, _, err := s.Redeem(RedemptionInput{RequestID: "conflict-redeem", AssetID: "asset-2048", Accepted: true}); err != nil {
+				return err
+			}
+			_, _, err := s.Redeem(RedemptionInput{RequestID: "conflict-redeem", AssetID: "asset-771", Accepted: true})
+			return err
+		}},
+		{name: "generation", run: func(s *Service) error {
+			if _, _, err := s.Redeem(RedemptionInput{RequestID: "setup-generation", AssetID: "asset-2048", Accepted: true}); err != nil {
+				return err
+			}
+			if _, _, err := s.Generate(GenerationInput{RequestID: "conflict-generate", AssetID: "asset-2048", Duration: 15, Quality: "standard", Accepted: true}); err != nil {
+				return err
+			}
+			_, _, err := s.Generate(GenerationInput{RequestID: "conflict-generate", AssetID: "asset-2048", Duration: 30, Quality: "standard", Accepted: true})
+			return err
+		}},
+		{name: "conversion", run: func(s *Service) error {
+			if _, _, err := s.Convert(ConversionInput{RequestID: "conflict-convert", AssetID: "asset-771", Region: "EU", Days: 30, Accepted: true}); err != nil {
+				return err
+			}
+			_, _, err := s.Convert(ConversionInput{RequestID: "conflict-convert", AssetID: "asset-771", Region: "US", Days: 30, Accepted: true})
+			return err
+		}},
+		{name: "exercise", run: func(s *Service) error {
+			if _, _, err := s.Exercise(ExerciseInput{RequestID: "conflict-exercise", AssetID: "asset-332", PlatformCode: "foundation", Accepted: true}); err != nil {
+				return err
+			}
+			_, _, err := s.Exercise(ExerciseInput{RequestID: "conflict-exercise", AssetID: "asset-332", PlatformCode: "haiwen", Accepted: true})
+			return err
+		}},
+		{name: "exchange", run: func(s *Service) error {
+			if _, _, err := s.Exchange(ExchangeInput{RequestID: "conflict-exchange", AssetID: "asset-528", Accepted: true}); err != nil {
+				return err
+			}
+			_, _, err := s.Exchange(ExchangeInput{RequestID: "conflict-exchange", AssetID: "asset-771", Accepted: true})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if code := apiErrorCode(test.run(newTestService())); code != "request_id_reused" {
+				t.Fatalf("error code = %q, want request_id_reused", code)
+			}
+		})
+	}
+}
+
+func TestAirdropRejectsPayloadConflictsAndInvalidReceipts(t *testing.T) {
+	s := newTestService()
+	address := "0x2222222222222222222222222222222222222222"
+	item, _, err := s.CreateAirdrop(AirdropInput{RequestID: "airdrop-conflict", RuleCode: "admin_approved", WalletAddress: address, ChainID: "0x61", Amount: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateAirdrop(AirdropInput{RequestID: "airdrop-conflict", RuleCode: "admin_approved", WalletAddress: address, ChainID: "0x61", Amount: 26}); apiErrorCode(err) != "request_id_reused" {
+		t.Fatalf("payload conflict error = %v", err)
+	}
+	if _, _, err := s.CreateAirdrop(AirdropInput{RequestID: "airdrop-token", RuleCode: "admin_approved", WalletAddress: address, ChainID: "0x61", Amount: 25, Token: "USDT"}); apiErrorCode(err) != "invalid_airdrop_token" {
+		t.Fatalf("token mismatch error = %v", err)
+	}
+	if _, err := s.UpdateAirdrop(item.ID, AirdropResultInput{Status: "confirmed", TxHash: "0xabc"}); apiErrorCode(err) != "invalid_transaction_hash" {
+		t.Fatalf("invalid tx hash error = %v", err)
+	}
+}
+
+func apiErrorCode(err error) string {
+	var target *APIError
+	if errors.As(err, &target) {
+		return target.Code
+	}
+	return ""
 }

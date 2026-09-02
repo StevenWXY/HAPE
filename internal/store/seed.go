@@ -64,10 +64,10 @@ func SeedState() State {
 			{ID: "exercise-3", RequestID: "seed-exercise-3", AssetID: "asset-109", PlatformCode: "superrare", Direction: "Clipli → SuperRare", DirectionEn: "Clipli → SuperRare", Value: 9900, StatusCode: "archived", Status: "已归档", StatusEn: "Archived", CreatedAt: "2026-06-18"},
 		},
 		CLIP: domain.CLIPAccount{
-			Symbol: "CLIP", Balance: 3460, SupplyPolicy: "一次性铸造，后续不增发", SupplyPolicyEn: "One-time mint with no further issuance",
+			Symbol: "CLIP", Balance: 3460, SupplyPolicy: "9 亿创世供应 + 1 亿治理预留，硬顶 10 亿", SupplyPolicyEn: "900M genesis supply + 100M governed reserve, 1B hard cap",
 			Acquisition: "核销 HAPW 时领取，也可通过外部 DEX 购买", AcquisitionEn: "Granted when HAPW is redeemed or purchased through an external DEX", AcquisitionKo: "HAPW 상각 시 지급되거나 외부 DEX에서 구매",
 			QuoteAsset: "USDT", PricePolicy: "由外部 DEX 流动性决定，不固定锚定", PricePolicyEn: "Market-priced by external DEX liquidity; no fixed peg", PricePolicyKo: "외부 DEX 유동성에 따른 시장 가격, 고정 페그 없음",
-			ContractStatus: "简化合约：固定供应与平台金库", ContractStatusEn: "Minimal contract: fixed supply and platform treasury", ContractStatusKo: "간소화 계약: 고정 공급 및 플랫폼 금고", DexURL: "https://app.uniswap.org/swap/",
+			ContractStatus: "BNB 合约：Timelock + 自适应发行器（待部署）", ContractStatusEn: "BNB contracts: Timelock + adaptive minter (pending deployment)", ContractStatusKo: "BNB 계약: Timelock + 적응형 발행기 (배포 대기)", DexURL: "https://pancakeswap.finance/swap?chain=bsc",
 			DexPool: domain.CLIPPool{ClipReserve: 250000, USDTReserve: 25000, UpdatedAt: "2026-08-10 16:00"}, HAPWExchangeFeeRate: 0.05,
 		},
 		CLIPTransactions: []domain.CLIPTransaction{
@@ -97,16 +97,23 @@ func SeedState() State {
 		},
 		AssetSyncRuns: []domain.AssetSyncRun{{ID: "sync-demo-20260818", SourceCode: "external-platforms", Status: "completed", StartedAt: "2026-08-18T08:29:58Z", CompletedAt: "2026-08-18T08:30:00Z", RecordsRead: 6, RecordsValid: 6, RecordsSaved: 6}},
 		CLIPTreasury: domain.CLIPTreasury{
-			Symbol: "CLIP", MintMode: "one-time-fixed-supply", MintedSupply: 10000000, TreasuryBalance: 9746540,
+			Symbol: "CLIP", MintMode: "genesis-plus-governed-reserve", MintedSupply: 1000000000, TreasuryBalance: 999746540,
 			LiquidityAllocation: 250000, LedgerOutstanding: 3460, TotalDistributed: 3460, TotalReclaimed: 0,
-			PlatformWallet: "0xCLIPLI…TREASURY", ContractAddress: "not-published", Network: "demo",
+			PlatformWallet: "0xCLIPLI…TREASURY", ContractAddress: "not-published", Network: "bnb-pending",
 			DistributionMode: "centralized-ledger", MintStatus: "prototype-snapshot", MintedAt: "2026-01-01T00:00:00Z",
 		},
 		DistributionRules: []domain.CLIPDistributionRule{
 			{Code: "hapw_redemption", Trigger: "successful_hapw_redemption", Formula: "floor(creditYield * 0.40)", Rate: 0.4, Description: "HAPW 核销成功后由平台金库一次性划拨", Enabled: true},
 		},
-		Distributions: []domain.CLIPDistribution{{ID: "distribution-903", RequestID: "seed-redeem-903", RuleCode: "hapw_redemption", UserRef: "anonymous-demo", AssetID: "asset-903", Amount: 48, UserBalanceBefore: 3412, UserBalanceAfter: 3460, TreasuryBefore: 9746588, TreasuryAfter: 9746540, Status: "completed", CreatedAt: "2026-08-06 09:30"}},
-		Session:       domain.SessionPolicy{Mode: "anonymous-demo", UserRef: "anonymous-demo", IdentityVerification: false, KYCRequired: false, WalletOptional: true, Persistence: "process-memory", Notice: "No real identity verification; wallet connection is an optional operation handle."},
+		Distributions: []domain.CLIPDistribution{{ID: "distribution-903", RequestID: "seed-redeem-903", RuleCode: "hapw_redemption", UserRef: "anonymous-demo", AssetID: "asset-903", Amount: 48, UserBalanceBefore: 3412, UserBalanceAfter: 3460, TreasuryBefore: 999746588, TreasuryAfter: 999746540, Status: "completed", CreatedAt: "2026-08-06 09:30"}},
+		AirdropRules: []domain.AirdropRule{
+			{Code: "hapw_redemption", Name: "HAPW 核销空投", Trigger: "successful_hapw_redemption", Formula: "floor(creditYield * 0.40)", Token: "CLIP", Enabled: true, RequiresWallet: true, Description: "HAPW 核销成功且绑定钱包后，按核销额度向该钱包创建 CLIP 空投任务"},
+			{Code: "admin_approved", Name: "指定钱包空投", Trigger: "admin_approved", Formula: "amount", Token: "CLIP", Enabled: true, RequiresWallet: true, Description: "管理员确认后，按指定数量从平台金库创建 CLIP 空投任务"},
+		},
+		WalletAssets: []domain.WalletAsset{
+			{ID: "wallet-asset-demo-2048", WalletAddress: "0x1111111111111111111111111111111111111111", AssetID: "asset-2048", TokenID: "#2048", Name: "海风计划", Balance: "1", Standard: "HAPW-1", SourceCode: "haiwen", ExternalAssetID: "HWF-HAPW-2048", ExternalURL: "https://hnccc.hzbcm.com/", SyncStatus: "synced", LastSyncedAt: "2026-08-18T08:30:00Z", RedemptionStatus: "available", CanRedeem: true, CanExercise: true},
+		},
+		Session: domain.SessionPolicy{Mode: "anonymous-demo", UserRef: "anonymous-demo", IdentityVerification: false, KYCRequired: false, WalletOptional: true, Persistence: "process-memory", Notice: "No real identity verification; wallet connection is an optional operation handle."},
 	}
 }
 

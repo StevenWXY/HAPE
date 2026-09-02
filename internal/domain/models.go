@@ -172,9 +172,9 @@ type CLIPTransaction struct {
 	CreatedAt      string `json:"createdAt"`
 }
 
-// CLIPTreasury is the conservation ledger for the fixed, one-time mint. The
-// public contract never exposes a mint operation; distribution is performed by
-// the platform service against centralized rules.
+// CLIPTreasury is the platform conservation snapshot. The BNB contract starts
+// with genesis supply and can release only the governed reserve; the API also
+// retains the platform ledger for pending distributions.
 type CLIPTreasury struct {
 	Symbol              string `json:"symbol"`
 	MintMode            string `json:"mintMode"`
@@ -336,13 +336,134 @@ type ProfileSettings struct {
 }
 
 type Profile struct {
-	Wallet          string          `json:"wallet"`
-	WalletProvider  string          `json:"walletProvider"`
-	OverseasAccount string          `json:"overseasAccount"`
-	Phone           string          `json:"phone"`
-	Level           int             `json:"level"`
-	Points          int             `json:"points"`
-	Settings        ProfileSettings `json:"settings"`
+	Wallet            string          `json:"wallet"`
+	WalletProvider    string          `json:"walletProvider"`
+	WalletChainID     string          `json:"walletChainId,omitempty"`
+	WalletStatus      string          `json:"walletStatus,omitempty"`
+	WalletConnectedAt string          `json:"walletConnectedAt,omitempty"`
+	OverseasAccount   string          `json:"overseasAccount"`
+	Phone             string          `json:"phone"`
+	Level             int             `json:"level"`
+	Points            int             `json:"points"`
+	Settings          ProfileSettings `json:"settings"`
+}
+
+// VerificationChallenge records a verification-code delivery requested for a
+// Clipli user. The code itself is never stored by Clipli; the external
+// platform remains responsible for delivery and validation.
+type VerificationChallenge struct {
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	ExternalUserID string `json:"externalUserId,omitempty"`
+	Phone          string `json:"-"`
+	PhoneMasked    string `json:"phoneMasked"`
+	DeliveryID     string `json:"deliveryId,omitempty"`
+	Status         string `json:"status"`
+	ExpiresAt      string `json:"expiresAt"`
+	CreatedAt      string `json:"createdAt"`
+	ConsumedAt     string `json:"consumedAt,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+}
+
+// ExternalPlatformBinding links a Clipli user to the corresponding user at
+// the configured external platform after that platform validates the phone
+// number and verification code.
+type ExternalPlatformBinding struct {
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	ExternalUserID string `json:"externalUserId"`
+	Phone          string `json:"-"`
+	PhoneMasked    string `json:"phoneMasked"`
+	PlatformCode   string `json:"platformCode"`
+	Status         string `json:"status"`
+	BoundAt        string `json:"boundAt"`
+	VerificationID string `json:"verificationId,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+}
+
+// ExternalAssetHolding is the normalized, read-only holding returned by the
+// external platform for a bound Clipli user.
+type ExternalAssetHolding struct {
+	AssetID         string `json:"assetId"`
+	SerialNumber    string `json:"serialNumber,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Quantity        int    `json:"quantity"`
+	Status          string `json:"status,omitempty"`
+	SourceCode      string `json:"sourceCode,omitempty"`
+	ExternalAssetID string `json:"externalAssetId,omitempty"`
+}
+
+// ExternalAssetRedemption is an audit record for a serial-numbered
+// redemption delegated to the external platform. SerialNumber is unique per
+// user and asset, and is used as the idempotency key across retries.
+type ExternalAssetRedemption struct {
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	ExternalUserID string `json:"externalUserId"`
+	AssetID        string `json:"assetId"`
+	SerialNumber   string `json:"serialNumber"`
+	RequestNo      string `json:"requestNo,omitempty"`
+	TplID          int64  `json:"tplId,omitempty"`
+	Num            int    `json:"num,omitempty"`
+	ExternalTxID   string `json:"externalTxId,omitempty"`
+	Quantity       int    `json:"quantity"`
+	Status         string `json:"status"`
+	RequestID      string `json:"requestId,omitempty"`
+	RedeemedAt     string `json:"redeemedAt"`
+}
+
+// WalletAsset is a source-stamped, read-only view of a Clipli-related asset
+// observed for a connected wallet. It does not transfer custody or prove
+// ownership beyond the configured source platform's response.
+type WalletAsset struct {
+	ID               string `json:"id"`
+	WalletAddress    string `json:"walletAddress"`
+	AssetID          string `json:"assetId"`
+	TokenID          string `json:"tokenId"`
+	Name             string `json:"name"`
+	Balance          string `json:"balance"`
+	Standard         string `json:"standard"`
+	SourceCode       string `json:"sourceCode"`
+	ExternalAssetID  string `json:"externalAssetId"`
+	ExternalURL      string `json:"externalUrl,omitempty"`
+	SyncStatus       string `json:"syncStatus"`
+	LastSyncedAt     string `json:"lastSyncedAt"`
+	RedemptionStatus string `json:"redemptionStatus,omitempty"`
+	CanRedeem        bool   `json:"canRedeem"`
+	CanExercise      bool   `json:"canExercise"`
+}
+
+type AirdropRule struct {
+	Code           string `json:"code"`
+	Name           string `json:"name"`
+	Trigger        string `json:"trigger"`
+	Formula        string `json:"formula"`
+	Token          string `json:"token"`
+	Enabled        bool   `json:"enabled"`
+	RequiresWallet bool   `json:"requiresWallet"`
+	Description    string `json:"description"`
+}
+
+type AirdropRecord struct {
+	ID               string `json:"id"`
+	RequestID        string `json:"requestId"`
+	RuleCode         string `json:"ruleCode"`
+	WalletAddress    string `json:"walletAddress"`
+	ChainID          string `json:"chainId"`
+	AssetID          string `json:"assetId,omitempty"`
+	Token            string `json:"token"`
+	Amount           int    `json:"amount"`
+	Status           string `json:"status"`
+	Eligibility      string `json:"eligibility"`
+	ExecutionMode    string `json:"executionMode"`
+	Network          string `json:"network,omitempty"`
+	Simulated        bool   `json:"simulated,omitempty"`
+	AllocationSource string `json:"allocationSource"`
+	ExecutorRef      string `json:"executorRef,omitempty"`
+	TxHash           string `json:"txHash,omitempty"`
+	FailureReason    string `json:"failureReason,omitempty"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 type AssetEvent struct {

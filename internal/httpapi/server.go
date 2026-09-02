@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,20 +20,30 @@ import (
 )
 
 type Handler struct {
-	service   *service.Service
-	publicDir string
-	logger    *slog.Logger
+	service     *service.Service
+	publicDir   string
+	logger      *slog.Logger
+	adminKey    string
+	executorKey string
 }
 
 func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) http.Handler {
-	handler := &Handler{service: serviceLayer, publicDir: publicDir, logger: logger}
+	handler := &Handler{service: serviceLayer, publicDir: publicDir, logger: logger, adminKey: os.Getenv("CLIPLI_ADMIN_API_KEY"), executorKey: os.Getenv("CLIPLI_AIRDROP_EXECUTOR_KEY")}
 	mux := http.NewServeMux()
 
 	// Operational endpoint.
 	mux.HandleFunc("GET /api/health", handler.health)
+	mux.HandleFunc("GET /admin", handler.adminPage)
+	mux.HandleFunc("GET /admin/", handler.adminPage)
 
 	// Versioned HAPW API.
 	mux.HandleFunc("GET /api/v1/session", handler.session)
+	mux.HandleFunc("POST /api/v1/wallet/connect", handler.connectWallet)
+	mux.HandleFunc("DELETE /api/v1/wallet/connect", handler.disconnectWallet)
+	mux.HandleFunc("GET /api/v1/wallet/assets", handler.walletAssets)
+	mux.HandleFunc("GET /api/v1/wallet/airdrop-eligibility", handler.walletAirdropEligibility)
+	mux.HandleFunc("GET /api/v1/airdrops", handler.airdrops)
+	mux.HandleFunc("GET /api/v1/airdrop-rules", handler.airdropRules)
 	mux.HandleFunc("GET /api/v1/hapw/summary", handler.hapwSummary)
 	mux.HandleFunc("GET /api/v1/hapw/assets", handler.hapwAssets)
 	mux.HandleFunc("GET /api/v1/hapw/assets/{assetID}", handler.hapwAsset)
@@ -57,6 +68,50 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 	mux.HandleFunc("GET /api/v1/integrations/asset-sources/{sourceCode}", handler.assetSource)
 	mux.HandleFunc("GET /api/v1/integrations/asset-sync-runs", handler.assetSyncRuns)
 
+	// External-platform account and asset integration. The platform verifies
+	// the phone/code pair and owns the source-of-truth asset operations; these
+	// routes only orchestrate and audit the Clipli side of that flow.
+	for _, prefix := range []string{"/api/v1/integrations/platform", "/api/v1/platform"} {
+		mux.HandleFunc("POST "+prefix+"/verification-codes", handler.sendVerificationCode)
+		mux.HandleFunc("POST "+prefix+"/verification-code", handler.sendVerificationCode)
+		mux.HandleFunc("GET "+prefix+"/bindings", handler.getExternalBinding)
+		mux.HandleFunc("POST "+prefix+"/bindings", handler.bindExternalUser)
+		mux.HandleFunc("GET "+prefix+"/users/{userID}/assets", handler.userAssets)
+		mux.HandleFunc("GET "+prefix+"/users/{userID}/asset-counts", handler.userAssetCounts)
+		mux.HandleFunc("POST "+prefix+"/users/{userID}/assets/{assetID}/redemptions", handler.redeemExternalAsset)
+	}
+	// Short aliases are useful for partner onboarding and preserve the same
+	// handlers/contracts as the namespaced integration routes.
+	mux.HandleFunc("GET /api/v1/users/{userID}/assets", handler.userAssets)
+	mux.HandleFunc("GET /api/v1/users/{userID}/asset-counts", handler.userAssetCounts)
+	mux.HandleFunc("GET /api/v1/users/{userID}/holdings", handler.userAssets)
+	mux.HandleFunc("POST /api/v1/users/{userID}/assets/{assetID}/redemptions", handler.redeemExternalAsset)
+	mux.HandleFunc("POST /api/v1/users/{userID}/assets/{assetID}/redeem", handler.redeemExternalAsset)
+	mux.HandleFunc("POST /api/v1/users/{userID}/verification-codes", handler.sendVerificationCode)
+	mux.HandleFunc("POST /api/v1/users/{userID}/bindings", handler.bindExternalUser)
+	mux.HandleFunc("POST /api/v1/bind/send-code", handler.sendVerificationCode)
+	mux.HandleFunc("POST /api/v1/bind/request-code", handler.sendVerificationCode)
+	mux.HandleFunc("POST /api/v1/bind", handler.bindExternalUser)
+	mux.HandleFunc("GET /api/v1/bind", handler.getExternalBinding)
+	mux.HandleFunc("GET /api/v1/assets/holdings", handler.userAssetsByQuery)
+	mux.HandleFunc("POST /api/v1/assets/redemptions", handler.redeemExternalAssetBody)
+	mux.HandleFunc("POST /api/v1/assets/{assetID}/redeem", handler.redeemExternalAsset)
+	mux.HandleFunc("GET /api/v1/integrations/platform/assets", handler.userAssetsByQuery)
+	mux.HandleFunc("POST /api/v1/integrations/platform/redemptions", handler.redeemExternalAssetBody)
+	mux.HandleFunc("POST /api/v1/integrations/verification-codes", handler.sendVerificationCode)
+	mux.HandleFunc("POST /api/v1/integrations/bindings", handler.bindExternalUser)
+	mux.HandleFunc("POST /api/v1/integrations/bind", handler.bindExternalUser)
+	mux.HandleFunc("GET /api/v1/integrations/users/{userID}/assets", handler.userAssets)
+	mux.HandleFunc("POST /api/v1/integrations/users/{userID}/assets/{assetID}/redemptions", handler.redeemExternalAsset)
+	mux.HandleFunc("GET /api/v1/integrations/assets", handler.userAssetsByQuery)
+	mux.HandleFunc("POST /api/v1/integrations/redemptions", handler.redeemExternalAssetBody)
+	mux.HandleFunc("GET /api/v1/admin/airdrops", handler.adminAirdrops)
+	mux.HandleFunc("POST /api/v1/admin/airdrops", handler.adminCreateAirdrop)
+	mux.HandleFunc("POST /api/v1/admin/airdrops/{airdropID}/simulate", handler.simulateAirdrop)
+	mux.HandleFunc("GET /api/v1/admin/bnb-networks", handler.adminBNBNetworks)
+	mux.HandleFunc("GET /api/v1/admin/airdrop-rules", handler.adminAirdropRules)
+	mux.HandleFunc("POST /api/v1/internal/airdrops/{airdropID}/result", handler.updateAirdropResult)
+
 	// Existing browser-client contract.
 	mux.HandleFunc("GET /api/overview", handler.overview)
 	mux.HandleFunc("GET /api/works", handler.works)
@@ -71,6 +126,7 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 	mux.HandleFunc("POST /api/transfers", handler.createExercise)
 	mux.HandleFunc("POST /api/clip/hapw-exchanges", handler.createExchange)
 	mux.HandleFunc("POST /api/profile/wallet", handler.connectWallet)
+	mux.HandleFunc("DELETE /api/profile/wallet", handler.disconnectWallet)
 	mux.HandleFunc("POST /api/profile/overseas", handler.setOverseasAccount)
 	mux.HandleFunc("DELETE /api/profile/overseas", handler.clearOverseasAccount)
 	mux.HandleFunc("PATCH /api/profile/settings", handler.updateSettings)
@@ -82,6 +138,15 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 
 func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"status": "ok", "service": "clipli-api", "runtime": "go", "time": time.Now().UTC().Format(time.RFC3339)}})
+}
+
+func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeFile(w, r, filepath.Join(h.publicDir, "admin.html"))
 }
 
 func (h *Handler) overview(w http.ResponseWriter, _ *http.Request) {
@@ -145,10 +210,13 @@ func (h *Handler) studio(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) profile(w http.ResponseWriter, _ *http.Request) {
 	state := h.service.Snapshot()
+	walletAssets, _ := h.service.WalletAssets(state.Profile.Wallet)
+	airdrops, _ := h.service.Airdrops(state.Profile.Wallet, "")
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"wallet": state.Profile.Wallet, "walletProvider": state.Profile.WalletProvider, "overseasAccount": state.Profile.OverseasAccount,
+		"wallet": state.Profile.Wallet, "walletProvider": state.Profile.WalletProvider, "walletChainId": state.Profile.WalletChainID, "walletStatus": state.Profile.WalletStatus, "walletConnectedAt": state.Profile.WalletConnectedAt, "overseasAccount": state.Profile.OverseasAccount,
 		"phone": state.Profile.Phone, "level": state.Profile.Level, "points": state.Profile.Points,
 		"settings": state.Profile.Settings, "clipBalance": state.CLIP.Balance, "session": state.Session,
+		"walletAssets": walletAssets, "airdrops": airdrops,
 	}})
 }
 
@@ -173,6 +241,129 @@ func (h *Handler) clipTreasury(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) clipDistributionRules(w http.ResponseWriter, _ *http.Request) {
 	items := h.service.Snapshot().DistributionRules
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+}
+
+func (h *Handler) walletAssets(w http.ResponseWriter, r *http.Request) {
+	address := r.URL.Query().Get("address")
+	if address == "" {
+		address = h.service.Snapshot().Profile.Wallet
+	}
+	items, err := h.service.WalletAssets(address)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"walletAddress": address, "items": items, "totalItems": len(items), "sourceOfTruth": "external-platform"}})
+}
+
+func (h *Handler) walletAirdropEligibility(w http.ResponseWriter, r *http.Request) {
+	address := r.URL.Query().Get("address")
+	if address == "" {
+		address = h.service.Snapshot().Profile.Wallet
+	}
+	eligibility, err := h.service.AirdropEligibility(r.URL.Query().Get("ruleCode"), address, r.URL.Query().Get("assetId"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": eligibility})
+}
+
+func (h *Handler) airdrops(w http.ResponseWriter, r *http.Request) {
+	address := r.URL.Query().Get("address")
+	if address == "" {
+		address = h.service.Snapshot().Profile.Wallet
+	}
+	items, err := h.service.Airdrops(address, r.URL.Query().Get("status"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+}
+
+func (h *Handler) airdropRules(w http.ResponseWriter, _ *http.Request) {
+	items := h.service.AirdropRules()
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+}
+
+func (h *Handler) adminAirdropRules(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	h.airdropRules(w, r)
+}
+
+func (h *Handler) adminAirdrops(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	items, err := h.service.Airdrops(r.URL.Query().Get("walletAddress"), r.URL.Query().Get("status"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+}
+
+func (h *Handler) adminCreateAirdrop(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	var input service.AirdropInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	result, idempotent, err := h.service.CreateAirdrop(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, creationStatus(idempotent), map[string]any{"data": result})
+}
+
+func (h *Handler) adminBNBNetworks(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"items": service.BNBChainConfigs(), "contractDeployed": false, "simulationOnly": true,
+		"note": "No BEP-20 contract or chain RPC is configured yet. Simulation confirms the platform ledger and queue flow only.",
+	}})
+}
+
+func (h *Handler) simulateAirdrop(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	var input struct {
+		ChainID string `json:"chainId"`
+	}
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	result, err := h.service.SimulateAirdrop(r.PathValue("airdropID"), input.ChainID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) updateAirdropResult(w http.ResponseWriter, r *http.Request) {
+	if !h.requireExecutor(w, r) {
+		return
+	}
+	var input service.AirdropResultInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdateAirdrop(r.PathValue("airdropID"), input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
 func (h *Handler) clipDistributions(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +397,192 @@ func (h *Handler) assetSource(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "asset_source_not_found", "Asset source not found")
 }
 
+func (h *Handler) sendVerificationCode(w http.ResponseWriter, r *http.Request) {
+	var input service.SendVerificationInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	if input.UserID == "" {
+		input.UserID = r.URL.Query().Get("userId")
+	}
+	result, err := h.service.SendVerificationCode(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"data": map[string]any{
+		"challenge": result.Challenge, "verificationId": result.Challenge.ID,
+		"userId": result.Challenge.UserID, "clipliUserId": result.Challenge.UserID, "phoneMasked": result.Challenge.PhoneMasked,
+		"status": result.Challenge.Status, "expiresAt": result.Challenge.ExpiresAt,
+	}})
+}
+
+func (h *Handler) bindExternalUser(w http.ResponseWriter, r *http.Request) {
+	var input service.BindUserInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	if input.UserID == "" {
+		input.UserID = r.URL.Query().Get("userId")
+	}
+	result, idempotent, err := h.service.BindUser(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, creationStatus(idempotent), map[string]any{"data": map[string]any{
+		"binding": result.Binding, "userId": result.Binding.UserID,
+		"clipliUserId":   result.Binding.UserID,
+		"externalUserId": result.Binding.ExternalUserID, "phoneMasked": result.Binding.PhoneMasked, "status": result.Binding.Status,
+	}})
+}
+
+func (h *Handler) getExternalBinding(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("userId")
+	if userID == "" {
+		userID = r.URL.Query().Get("clipliUserId")
+	}
+	binding, _, err := h.service.GetBinding(userID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"binding": binding, "userId": binding.UserID,
+		"clipliUserId":   binding.UserID,
+		"externalUserId": binding.ExternalUserID, "phoneMasked": binding.PhoneMasked, "status": binding.Status,
+	}})
+}
+
+func (h *Handler) userAssets(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userID")
+	if userID == "" {
+		userID = r.URL.Query().Get("userId")
+	}
+	if raw, ok := r.URL.Query()["tplIds"]; ok {
+		tplIDs, err := parseTemplateIDs(strings.Join(raw, ","))
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		result, err := h.service.UserAssetCounts(userID, tplIDs)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": result})
+		return
+	}
+	result, err := h.service.UserAssets(userID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) userAssetCounts(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userID")
+	if userID == "" {
+		userID = r.URL.Query().Get("userId")
+	}
+	tplIDs, err := parseTemplateIDs(r.URL.Query().Get("tplIds"))
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	result, err := h.service.UserAssetCounts(userID, tplIDs)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) userAssetsByQuery(w http.ResponseWriter, r *http.Request) {
+	h.userAssets(w, r)
+}
+
+func (h *Handler) redeemExternalAsset(w http.ResponseWriter, r *http.Request) {
+	var input service.RedeemExternalAssetInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	if input.UserID == "" {
+		input.UserID = r.URL.Query().Get("userId")
+	}
+	if input.AssetID == "" {
+		input.AssetID = r.PathValue("assetID")
+	}
+	h.writeExternalRedemption(w, input)
+}
+
+func (h *Handler) redeemExternalAssetBody(w http.ResponseWriter, r *http.Request) {
+	var input service.RedeemExternalAssetInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	if input.UserID == "" {
+		input.UserID = r.URL.Query().Get("userId")
+	}
+	if input.AssetID == "" {
+		input.AssetID = r.PathValue("assetID")
+	}
+	h.writeExternalRedemption(w, input)
+}
+
+func (h *Handler) writeExternalRedemption(w http.ResponseWriter, input service.RedeemExternalAssetInput) {
+	result, idempotent, err := h.service.RedeemExternalAsset(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	status := creationStatus(idempotent)
+	writeJSON(w, status, map[string]any{"data": map[string]any{
+		"redemption": result.Redemption, "id": result.Redemption.ID,
+		"assetId": result.Redemption.AssetID, "serialNumber": result.Redemption.SerialNumber,
+		"serialNo": result.Redemption.SerialNumber, "uniqueSerialNumber": result.Redemption.SerialNumber,
+		"requestNo": result.Redemption.RequestNo, "tplId": result.Redemption.TplID, "num": result.Redemption.Num,
+		"externalUserId": result.Redemption.ExternalUserID, "status": result.Redemption.Status,
+	}})
+}
+
+func parseTemplateIDs(raw string) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, serviceError(http.StatusBadRequest, "invalid_tpl_ids", "Provide between 1 and 100 template IDs")
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) == 0 || len(parts) > 100 {
+		return nil, serviceError(http.StatusBadRequest, "invalid_tpl_ids", "Provide between 1 and 100 template IDs")
+	}
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || value <= 0 {
+			return nil, serviceError(http.StatusBadRequest, "invalid_tpl_ids", "Template IDs must be positive integers")
+		}
+		ids = append(ids, value)
+	}
+	return ids, nil
+}
+
+func serviceError(status int, code, message string) error {
+	return &service.APIError{Status: status, Code: code, Message: message}
+}
+
 func (h *Handler) assetSyncRuns(w http.ResponseWriter, _ *http.Request) {
 	items := h.service.Snapshot().AssetSyncRuns
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
@@ -213,11 +590,19 @@ func (h *Handler) assetSyncRuns(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) assetRequirements(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"contractVersion": "clipli-external-asset-v1",
+		"contractVersion": "clipli-haiwen-openapi-v1",
 		"sourceOfTruth":   "external-platform",
-		"authentication":  "provider-api-key-or-signed-service-account; never exposed to browser",
+		"authentication":  "x-app-id/x-app-key; server-side only, never exposed to browser",
 		"requiredEndpoints": []map[string]any{
-			{"method": "GET", "path": "/assets", "purpose": "full or cursor-based HAPW asset list", "requiredFields": []string{"id", "tokenId", "name", "rightsHolder", "status", "authorization", "provenance"}},
+			{"method": "GET", "path": "/openapi/works", "purpose": "published work list", "requiredFields": []string{"workId", "worksName", "publishNum"}},
+			{"method": "GET", "path": "/openapi/tpls", "purpose": "published copyright template list", "requiredFields": []string{"tplId", "name", "workId", "publishCount"}},
+			{"method": "GET", "path": "/openapi/user/bind/status?externalUserId={externalUserId}", "purpose": "binding status before starting the flow", "requiredFields": []string{"externalUserId", "bound", "boundAt"}},
+			{"method": "POST", "path": "/openapi/user/bind/sms", "purpose": "send the binding SMS", "requiredFields": []string{"externalUserId", "phone"}},
+			{"method": "POST", "path": "/openapi/user/bind", "purpose": "validate the SMS code and create the binding", "requiredFields": []string{"externalUserId", "phone", "smsCode"}},
+			{"method": "GET", "path": "/openapi/user/assets/count?externalUserId={externalUserId}&tplIds={tplIds}", "purpose": "query redeemable counts by template", "requiredFields": []string{"externalUserId", "list[].tplId", "list[].count"}},
+			{"method": "POST", "path": "/openapi/asset/write-off", "purpose": "write off assets idempotently", "requiredFields": []string{"requestNo", "externalUserId", "tplId", "num"}},
+			{"method": "GET", "path": "/assets", "purpose": "full or cursor-based HAPW asset list; each record should include owner", "requiredFields": []string{"id", "tokenId", "name", "owner", "rightsHolder", "status", "authorization", "provenance"}},
+			{"method": "GET", "path": "/assets?owner={walletAddress}", "purpose": "recommended wallet portfolio query", "requiredFields": []string{"id", "tokenId", "name", "owner", "status", "externalUrl", "updatedAt"}},
 			{"method": "GET", "path": "/assets/{assetId}", "purpose": "single asset detail and current state", "requiredFields": []string{"id", "tokenId", "status", "owner", "externalUrl", "updatedAt"}},
 			{"method": "GET", "path": "/assets/{assetId}/authorization", "purpose": "rights scope and territories", "requiredFields": []string{"holder", "scope", "territories", "usageTypes", "validFrom"}},
 			{"method": "GET", "path": "/assets/{assetId}/media", "purpose": "linked work and preview metadata", "requiredFields": []string{"linkedWorkIds", "format"}},
@@ -432,18 +817,20 @@ func (h *Handler) createExchange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) connectWallet(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Provider string `json:"provider"`
-	}
+	var input service.WalletConnectInput
 	if !decodeBody(w, r, &input) {
 		return
 	}
-	profile, err := h.service.ConnectWallet(input.Provider)
+	profile, err := h.service.ConnectWallet(input)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": profile})
+}
+
+func (h *Handler) disconnectWallet(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"data": h.service.DisconnectWallet()})
 }
 
 func (h *Handler) setOverseasAccount(w http.ResponseWriter, r *http.Request) {
@@ -503,6 +890,27 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error) {
 	}
 	h.logger.Error("unhandled service error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
+}
+
+func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	return requireSecret(w, r, h.adminKey, "X-Clipli-Admin-Key", "admin_not_configured", "admin_unauthorized")
+}
+
+func (h *Handler) requireExecutor(w http.ResponseWriter, r *http.Request) bool {
+	return requireSecret(w, r, h.executorKey, "X-Clipli-Executor-Key", "executor_not_configured", "executor_unauthorized")
+}
+
+func requireSecret(w http.ResponseWriter, r *http.Request, configured, header, missingCode, invalidCode string) bool {
+	if strings.TrimSpace(configured) == "" {
+		writeError(w, http.StatusServiceUnavailable, missingCode, "This protected integration is not configured")
+		return false
+	}
+	received := r.Header.Get(header)
+	if subtle.ConstantTimeCompare([]byte(received), []byte(configured)) != 1 {
+		writeError(w, http.StatusUnauthorized, invalidCode, "The integration credential is invalid")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) security(next http.Handler) http.Handler {
