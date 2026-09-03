@@ -31,6 +31,9 @@ type State struct {
 	VerificationChallenges []domain.VerificationChallenge
 	Bindings               []domain.ExternalPlatformBinding
 	ExternalRedemptions    []domain.ExternalAssetRedemption
+	ExternalTemplates      []domain.ExternalAssetTemplate
+	ExternalAssetMappings  []domain.ExternalAssetMappingRule
+	ExternalMigrations     []domain.ExternalAssetMigration
 }
 
 type Memory struct {
@@ -62,6 +65,10 @@ func cloneState(state State) State {
 		clone.Assets[index].Authorization.Territories = append([]string(nil), state.Assets[index].Authorization.Territories...)
 		clone.Assets[index].Authorization.UsageTypes = append([]string(nil), state.Assets[index].Authorization.UsageTypes...)
 		clone.Assets[index].Media.LinkedWorkIDs = append([]string(nil), state.Assets[index].Media.LinkedWorkIDs...)
+		if state.Assets[index].SourceTemplate != nil {
+			template := cloneExternalTemplate(*state.Assets[index].SourceTemplate)
+			clone.Assets[index].SourceTemplate = &template
+		}
 	}
 	clone.Exercises = append([]domain.AssetExercise(nil), state.Exercises...)
 	clone.CLIPTransactions = append([]domain.CLIPTransaction(nil), state.CLIPTransactions...)
@@ -80,5 +87,30 @@ func cloneState(state State) State {
 	clone.VerificationChallenges = append([]domain.VerificationChallenge(nil), state.VerificationChallenges...)
 	clone.Bindings = append([]domain.ExternalPlatformBinding(nil), state.Bindings...)
 	clone.ExternalRedemptions = append([]domain.ExternalAssetRedemption(nil), state.ExternalRedemptions...)
+	clone.ExternalTemplates = make([]domain.ExternalAssetTemplate, len(state.ExternalTemplates))
+	for index := range state.ExternalTemplates {
+		clone.ExternalTemplates[index] = cloneExternalTemplate(state.ExternalTemplates[index])
+	}
+	clone.ExternalAssetMappings = append([]domain.ExternalAssetMappingRule(nil), state.ExternalAssetMappings...)
+	clone.ExternalMigrations = append([]domain.ExternalAssetMigration(nil), state.ExternalMigrations...)
+	for index := range clone.ExternalMigrations {
+		clone.ExternalMigrations[index].ClipliAssetIDs = append([]string(nil), state.ExternalMigrations[index].ClipliAssetIDs...)
+		clone.ExternalMigrations[index].RedemptionIDs = append([]string(nil), state.ExternalMigrations[index].RedemptionIDs...)
+	}
+	return clone
+}
+
+func cloneExternalTemplate(value domain.ExternalAssetTemplate) domain.ExternalAssetTemplate {
+	clone := value
+	if value.WorksType != nil {
+		worksType := *value.WorksType
+		clone.WorksType = &worksType
+	}
+	if value.WorksSubType != nil {
+		worksSubType := *value.WorksSubType
+		clone.WorksSubType = &worksSubType
+	}
+	clone.Authors = append([]domain.ExternalParty(nil), value.Authors...)
+	clone.Owners = append([]domain.ExternalParty(nil), value.Owners...)
 	return clone
 }

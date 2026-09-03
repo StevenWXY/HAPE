@@ -70,6 +70,14 @@ CLIPLI_EXTERNAL_PLATFORM_TPL_IDS=100001,100002 \
 PORT=4173 go run ./cmd/server
 ```
 
+如需启用海文发模板迁移，额外配置服务端维护的版本化映射（示例只映射测试模板 `100053`）：
+
+```bash
+CLIPLI_EXTERNAL_ASSET_MAPPINGS='[{"tplId":100053,"version":"haiwen-2026-09-v1","creditYield":150,"clipPrice":520,"currency":"CNY","active":true}]'
+```
+
+`GET /api/v1/integrations/platform/templates` 只读获取海文发 `/openapi/tpls` 模板并返回映射状态；`POST /api/v1/integrations/platform/users/{userId}/migrations/preview` 只读校验模板、持仓数量和候选镜像资产；真正迁移接口需要 `X-Clipli-Admin-Key`，会按 `requestNo` 幂等地创建待核销的 Clipli 镜像资产并核销海文发资产。海文发核销成功后，Clipli 会在同一笔迁移中激活并核销镜像资产，自动结算 Creation Credits 和 CLIP；镜像资产不能再次核销。
+
 `CLIPLI_EXTERNAL_PLATFORM_TPL_IDS` 用于未带 `tplIds` 的兼容持仓查询；按模板查询时直接在 URL 传入 `tplIds`。生产环境将 URL 替换为 `https://api.hnccc.com/api`，并使用独立生产凭据。
 
 不配置上述变量时，公开钱包资产、资格和空投查询仍可用，运营创建与执行器回调接口返回配置缺失。外部执行器应轮询 `GET /api/v1/admin/airdrops`，使用平台托管钱包完成 CLIP 转账，再回调 `POST /api/v1/internal/airdrops/{id}/result`。详细请求体、规则公式和安全边界见 [docs/API.md](docs/API.md) 的“钱包资产与 CLIP 空投 API”。

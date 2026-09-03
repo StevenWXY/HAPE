@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,6 +67,16 @@ func main() {
 		}
 	}
 	serviceLayer := service.New(memory)
+	if rawMappings := strings.TrimSpace(os.Getenv("CLIPLI_EXTERNAL_ASSET_MAPPINGS")); rawMappings != "" {
+		var mappings []domain.ExternalAssetMappingRule
+		if err := json.Unmarshal([]byte(rawMappings), &mappings); err != nil {
+			logger.Warn("external asset mappings are invalid; migrations will remain disabled", "error", err)
+		} else if err := serviceLayer.SetExternalAssetMappings(mappings); err != nil {
+			logger.Warn("external asset mappings failed validation; migrations will remain disabled", "error", err)
+		} else {
+			logger.Info("external asset mappings configured", "count", len(mappings))
+		}
+	}
 	if platformURL := os.Getenv("CLIPLI_EXTERNAL_PLATFORM_URL"); platformURL != "" {
 		platformClient := service.NewHTTPExternalPlatform(platformURL, nil)
 		platformClient.AppID = os.Getenv("CLIPLI_EXTERNAL_PLATFORM_APP_ID")

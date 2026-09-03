@@ -78,6 +78,10 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 		mux.HandleFunc("POST "+prefix+"/bindings", handler.bindExternalUser)
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/assets", handler.userAssets)
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/asset-counts", handler.userAssetCounts)
+		mux.HandleFunc("GET "+prefix+"/templates", handler.externalTemplates)
+		mux.HandleFunc("GET "+prefix+"/users/{userID}/migrations", handler.externalMigrations)
+		mux.HandleFunc("POST "+prefix+"/users/{userID}/migrations/preview", handler.previewExternalMigration)
+		mux.HandleFunc("POST "+prefix+"/users/{userID}/migrations", handler.migrateExternalAsset)
 		mux.HandleFunc("POST "+prefix+"/users/{userID}/assets/{assetID}/redemptions", handler.redeemExternalAsset)
 	}
 	// Short aliases are useful for partner onboarding and preserve the same
@@ -503,6 +507,64 @@ func (h *Handler) userAssetCounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) externalTemplates(w http.ResponseWriter, r *http.Request) {
+	workID := int64(queryInt(r, "workId", 0))
+	result, err := h.service.ExternalTemplates(queryInt(r, "page", 1), queryInt(r, "pageSize", 20), workID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) externalMigrations(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userID")
+	if userID == "" {
+		userID = r.URL.Query().Get("userId")
+	}
+	items, err := h.service.ExternalMigrations(userID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"items": items, "totalItems": len(items)}})
+}
+
+func (h *Handler) previewExternalMigration(w http.ResponseWriter, r *http.Request) {
+	var input service.MigrateExternalAssetInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	result, err := h.service.PreviewExternalAssetMigration(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) migrateExternalAsset(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+	var input service.MigrateExternalAssetInput
+	if !decodeBody(w, r, &input) {
+		return
+	}
+	if input.UserID == "" {
+		input.UserID = r.PathValue("userID")
+	}
+	result, idempotent, err := h.service.MigrateExternalAsset(input)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, creationStatus(idempotent), map[string]any{"data": result})
 }
 
 func (h *Handler) userAssetsByQuery(w http.ResponseWriter, r *http.Request) {

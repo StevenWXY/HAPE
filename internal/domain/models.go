@@ -55,33 +55,34 @@ type ExternalAssetRef struct {
 // HAPWAsset retains the original flat fields for the current frontend and adds
 // structured authorization and provenance blocks for API consumers.
 type HAPWAsset struct {
-	ID                   string           `json:"id"`
-	Kind                 string           `json:"kind"`
-	TokenID              string           `json:"tokenId"`
-	Name                 string           `json:"name"`
-	NameEn               string           `json:"nameEn"`
-	NameKo               string           `json:"nameKo,omitempty"`
-	Value                int              `json:"value"`
-	Currency             string           `json:"currency"`
-	Status               string           `json:"status"`
-	StatusEn             string           `json:"statusEn"`
-	StatusKo             string           `json:"statusKo,omitempty"`
-	Transferable         bool             `json:"transferable"`
-	Owner                string           `json:"owner"`
-	RightsHolder         string           `json:"rightsHolder"`
-	RightsHolderEn       string           `json:"rightsHolderEn"`
-	RightsHolderKo       string           `json:"rightsHolderKo,omitempty"`
-	AuthorizationScope   string           `json:"authorizationScope"`
-	AuthorizationScopeEn string           `json:"authorizationScopeEn"`
-	AuthorizationScopeKo string           `json:"authorizationScopeKo,omitempty"`
-	CreditYield          int              `json:"creditYield"`
-	ClipPrice            int              `json:"clipPrice"`
-	ExchangeAvailable    bool             `json:"exchangeAvailable"`
-	RedemptionStatus     string           `json:"redemptionStatus"`
-	Authorization        Authorization    `json:"authorization"`
-	Provenance           Provenance       `json:"provenance"`
-	Media                AssetMedia       `json:"media"`
-	External             ExternalAssetRef `json:"external"`
+	ID                   string                 `json:"id"`
+	Kind                 string                 `json:"kind"`
+	TokenID              string                 `json:"tokenId"`
+	Name                 string                 `json:"name"`
+	NameEn               string                 `json:"nameEn"`
+	NameKo               string                 `json:"nameKo,omitempty"`
+	Value                int                    `json:"value"`
+	Currency             string                 `json:"currency"`
+	Status               string                 `json:"status"`
+	StatusEn             string                 `json:"statusEn"`
+	StatusKo             string                 `json:"statusKo,omitempty"`
+	Transferable         bool                   `json:"transferable"`
+	Owner                string                 `json:"owner"`
+	RightsHolder         string                 `json:"rightsHolder"`
+	RightsHolderEn       string                 `json:"rightsHolderEn"`
+	RightsHolderKo       string                 `json:"rightsHolderKo,omitempty"`
+	AuthorizationScope   string                 `json:"authorizationScope"`
+	AuthorizationScopeEn string                 `json:"authorizationScopeEn"`
+	AuthorizationScopeKo string                 `json:"authorizationScopeKo,omitempty"`
+	CreditYield          int                    `json:"creditYield"`
+	ClipPrice            int                    `json:"clipPrice"`
+	ExchangeAvailable    bool                   `json:"exchangeAvailable"`
+	RedemptionStatus     string                 `json:"redemptionStatus"`
+	Authorization        Authorization          `json:"authorization"`
+	Provenance           Provenance             `json:"provenance"`
+	Media                AssetMedia             `json:"media"`
+	External             ExternalAssetRef       `json:"external"`
+	SourceTemplate       *ExternalAssetTemplate `json:"sourceTemplate,omitempty"`
 }
 
 type Work struct {
@@ -391,6 +392,66 @@ type ExternalAssetHolding struct {
 	Status          string `json:"status,omitempty"`
 	SourceCode      string `json:"sourceCode,omitempty"`
 	ExternalAssetID string `json:"externalAssetId,omitempty"`
+}
+
+// ExternalParty is the minimal author/rights-owner identity exposed by the
+// Haiwen template catalog. It intentionally excludes private contact data.
+type ExternalParty struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// ExternalAssetTemplate is an immutable snapshot of the metadata returned by
+// Haiwen /openapi/tpls. Clipli-specific economics are kept in a separate
+// mapping rule so source metadata is never silently rewritten.
+type ExternalAssetTemplate struct {
+	TplID         int64           `json:"tplId"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Image         string          `json:"image"`
+	WorkID        int64           `json:"workId"`
+	WorksName     string          `json:"worksName"`
+	WorksType     *int64          `json:"worksType"`
+	WorksSubType  *int64          `json:"worksSubType"`
+	WorksTypeName string          `json:"worksTypeName"`
+	Authors       []ExternalParty `json:"authors"`
+	Owners        []ExternalParty `json:"owners"`
+	PublishCount  int             `json:"publishCount"`
+}
+
+// ExternalAssetMappingRule supplies only the Clipli-owned economic fields
+// that are absent from the source template response.
+type ExternalAssetMappingRule struct {
+	TplID         int64  `json:"tplId"`
+	Version       string `json:"version"`
+	CreditYield   int    `json:"creditYield"`
+	ClipPrice     int    `json:"clipPrice"`
+	Currency      string `json:"currency"`
+	Active        bool   `json:"active"`
+	EffectiveFrom string `json:"effectiveFrom,omitempty"`
+}
+
+// ExternalAssetMigration tracks one idempotent Haiwen-to-Clipli transfer.
+// Clipli assets are staged first, then activated only after Haiwen confirms
+// the write-off.
+type ExternalAssetMigration struct {
+	ID                   string   `json:"id"`
+	RequestID            string   `json:"requestId"`
+	RequestNo            string   `json:"requestNo"`
+	UserID               string   `json:"userId"`
+	ExternalUserID       string   `json:"externalUserId"`
+	TplID                int64    `json:"tplId"`
+	Quantity             int      `json:"quantity"`
+	MappingVersion       string   `json:"mappingVersion"`
+	ClipliAssetIDs       []string `json:"clipliAssetIds"`
+	RedemptionIDs        []string `json:"redemptionIds,omitempty"`
+	CreditsGranted       int      `json:"creditsGranted"`
+	ClipGranted          int      `json:"clipGranted"`
+	ExternalRedemptionID string   `json:"externalRedemptionId,omitempty"`
+	Status               string   `json:"status"`
+	FailureReason        string   `json:"failureReason,omitempty"`
+	CreatedAt            string   `json:"createdAt"`
+	UpdatedAt            string   `json:"updatedAt"`
 }
 
 // ExternalAssetRedemption is an audit record for a serial-numbered

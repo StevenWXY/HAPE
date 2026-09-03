@@ -264,6 +264,15 @@ CLIP 的公开 API 不提供铸币权限：`GET /api/v1/clip/treasury` 返回 BN
 
 `GET /api/v1/session` 用于获取当前调用上下文与可用操作能力。账户、身份、钱包和持久化策略由部署方配置；合作方不应仅凭钱包地址推断版权、资产或平台账户权限。
 
+### 5.1 海文发模板镜像迁移
+
+- `GET /api/v1/integrations/platform/templates`：只读调用海文发 `/openapi/tpls`，返回模板原始字段、Clipli 版本化映射和 `migrationReady`。模板描述按原文保存，客户端必须转义后展示。
+- `POST /api/v1/integrations/platform/users/{userId}/migrations/preview`：只读校验模板、外部用户持仓数量和候选 Clipli 镜像资产，不会创建资产或核销海文发。
+- `POST /api/v1/integrations/platform/users/{userId}/migrations`：受 `X-Clipli-Admin-Key` 保护的不可逆迁移。服务端先创建 `pending_external_write_off` 镜像资产，再核验持仓并调用海文发核销；海文发成功后激活并立即完成 Clipli 核销，发放 Creation Credits 和 CLIP。`requestId` 和 `requestNo` 均幂等。
+- `GET /api/v1/integrations/platform/users/{userId}/migrations`：查询迁移审计记录。
+
+迁移完成“海文发原资产核销 → Clipli 一致模板镜像资产创建/激活/核销 → Creation Credits 和 CLIP 发放”。成功响应中的 `creditsGranted` 和 `clipGranted` 记录本次结算；用户不能再次核销同一镜像资产。
+
 ## 6. 外部平台用户绑定与资产核销（联调框架）
 
 以下接口用于 Clipli 与外部平台的手机号绑定和资产操作。外部平台是验证码校验、用户资产持仓和核销结果的事实来源；Clipli 只保存绑定关系、查询快照元数据和核销审计记录。当前未配置 `CLIPLI_EXTERNAL_PLATFORM_URL` 时，服务使用内存演示适配器（验证码固定为 `123456`，仅用于联调，不得用于生产）。

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/StevenWXY/HAPE/internal/domain"
 	"github.com/StevenWXY/HAPE/internal/service"
 	"github.com/StevenWXY/HAPE/internal/store"
 )
@@ -23,6 +24,16 @@ func testHandler(t *testing.T) http.Handler {
 		t.Fatal(err)
 	}
 	return New(service.New(store.NewMemory(store.SeedState())), publicDir, logger)
+}
+
+func testHandlerWithService(t *testing.T, serviceLayer *service.Service) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	publicDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(publicDir, "admin.html"), []byte("<html>Clipli admin.js</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return New(serviceLayer, publicDir, logger)
 }
 
 func TestHAPWAssetAPI(t *testing.T) {
@@ -380,6 +391,57 @@ func TestExternalPlatformBindingAndRedemptionRoutes(t *testing.T) {
 	})
 	if status != http.StatusCreated || !bytes.Contains(data, []byte(`"requestNo":"WO-HTTP-0002"`)) || !bytes.Contains(data, []byte(`"num":2`)) {
 		t.Fatalf("Haiwen redemption status=%d body=%s", status, data)
+	}
+}
+
+func TestHaiwenTemplateAndMigrationRoutes(t *testing.T) {
+	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
+	serviceLayer := service.New(store.NewMemory(store.SeedState()))
+	if err := serviceLayer.SetExternalAssetMappings([]domain.ExternalAssetMappingRule{{TplID: 100001, Version: "test-v1", CreditYield: 150, ClipPrice: 520, Currency: "CNY", Active: true}}); err != nil {
+		t.Fatal(err)
+	}
+	handler := testHandlerWithService(t, serviceLayer)
+	status, data := doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/templates?page=1&pageSize=20", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"tplId":100001`)) || !bytes.Contains(data, []byte(`"migrationReady":true`)) {
+		t.Fatalf("templates status=%d body=%s", status, data)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/verification-codes", map[string]any{"userId": "clip-migration-http", "phone": "13800138000"})
+	if status != http.StatusAccepted {
+		t.Fatalf("verification status=%d body=%s", status, data)
+	}
+	var challenge struct {
+		Challenge struct {
+			ID string `json:"id"`
+		} `json:"challenge"`
+	}
+	if err := json.Unmarshal(data, &challenge); err != nil {
+		t.Fatal(err)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/bindings", map[string]any{"userId": "clip-migration-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID})
+	if status != http.StatusCreated {
+		t.Fatalf("binding status=%d body=%s", status, data)
+	}
+	input := map[string]any{"tplId": 100001, "num": 1, "requestNo": "HTTP-MIGRATION-100001", "requestId": "http-migration-100001", "accepted": true}
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/users/clip-migration-http/migrations/preview", input)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"ready":true`)) || !bytes.Contains(data, []byte(`"pending_external_write_off"`)) {
+		t.Fatalf("preview status=%d body=%s", status, data)
+	}
+	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/users/clip-migration-http/migrations", input)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("migration without admin key status=%d", status)
+	}
+	encoded, _ := json.Marshal(input)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/platform/users/clip-migration-http/migrations", bytes.NewReader(encoded))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"completed_rewards_settled"`)) || !bytes.Contains(recorder.Body.Bytes(), []byte(`"sourceTemplate"`)) || !bytes.Contains(recorder.Body.Bytes(), []byte(`"creditsGranted":150`)) || !bytes.Contains(recorder.Body.Bytes(), []byte(`"clipGranted":60`)) {
+		t.Fatalf("migration status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/users/clip-migration-http/migrations", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"mappingVersion":"test-v1"`)) {
+		t.Fatalf("migration list status=%d body=%s", status, data)
 	}
 }
 

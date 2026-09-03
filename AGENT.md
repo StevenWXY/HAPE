@@ -102,6 +102,9 @@ CLIPAccount        { balance, quoteAsset, dexUrl, dexPool, hapwExchangeFeeRate }
 CLIPTreasury       { mintedSupply, treasuryBalance, liquidityAllocation, ledgerOutstanding, platformWallet, mintMode, distributionMode }
 CLIPDistribution   { requestId, ruleCode, userRef, assetId, amount, before/after balances, createdAt }
 WalletAsset        { walletAddress, assetId, sourceCode, externalAssetId, balance, canRedeem, canExercise }
+ExternalAssetTemplate { tplId, name, description, image, workId, worksName, authors, owners, publishCount }
+ExternalAssetMappingRule { tplId, version, creditYield, clipPrice, currency, active }
+ExternalAssetMigration { requestId, requestNo, tplId, quantity, mappingVersion, clipliAssetIds, status, externalRedemptionId }
 AirdropRule        { code, trigger, formula, token, enabled, requiresWallet }
 AirdropRecord      { requestId, ruleCode, walletAddress, chainId, amount, status, allocationSource, txHash, createdAt }
 AssetSource        { code, baseUrl, mode, status, lastSyncedAt, assetCount }
@@ -147,6 +150,10 @@ ExternalPlatform   { code, name, url }
 - `GET /api/v1/integrations/asset-requirements`：外部平台必须提供的资产、授权、媒体、事件、关联作品和可选 Webhook 接口清单。
 - `GET /api/v1/integrations/asset-sources`、`GET /api/v1/integrations/asset-sources/:code`：外部资产源状态与最近同步时间。
 - `GET /api/v1/integrations/asset-sync-runs`：同步批次、读取/校验/保存条数与失败原因。
+- `GET /api/v1/integrations/platform/templates`：只读获取海文发 `/openapi/tpls` 模板目录，并附带 Clipli 映射状态。
+- `POST /api/v1/integrations/platform/users/{userID}/migrations/preview`：只读预览模板镜像迁移，校验外部持仓但不核销。
+- `POST /api/v1/integrations/platform/users/{userID}/migrations`：受运营密钥保护，按模板映射创建 Clipli 镜像资产并核销海文发；成功后自动核销镜像并结算 Creation Credits 和 CLIP。
+- `GET /api/v1/integrations/platform/users/{userID}/migrations`：迁移审计记录。
 
 ### HAPW v1 写入接口
 

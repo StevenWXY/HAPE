@@ -510,3 +510,57 @@ POST /openapi/asset/write-off
 3. 用户输入验证码后，外部平台调用绑定接口。
 4. 绑定成功后，可查询用户资产数量。
 5. 核销时传入唯一流水号、用户 ID、模板 ID 和核销数量。
+
+## 11. Clipli 模板镜像与资产迁移
+
+海文发的 `/openapi/tpls` 返回版权模板目录，可用于在 Clipli 展示和生成镜像资产，但模板目录本身不证明某个用户的持仓，也不包含 Clipli 的 Creation Credits 或 CLIP 经济参数。Clipli 因此将源模板快照与服务端版本化映射分开保存。
+
+### 11.1 读取模板目录
+
+```http
+GET /api/v1/integrations/platform/templates?page=1&pageSize=20&workId=100002
+```
+
+该接口只读调用海文发 `GET /openapi/tpls`，返回 `template` 原始字段、可选的 `mapping` 和 `migrationReady`。模板描述按原文保存，不得直接作为 HTML 注入页面；图片仅接受安全的 `https` 地址。
+
+### 11.2 迁移预览
+
+```http
+POST /api/v1/integrations/platform/users/100001/migrations/preview
+Content-Type: application/json
+
+{
+  "tplId": 100053,
+  "num": 1,
+  "requestNo": "HW-MIGRATION-100053-01",
+  "requestId": "migration-100053-01"
+}
+```
+
+预览会读取模板目录和 `/openapi/user/assets/count`，返回持仓数量、映射规则和候选 Clipli 镜像资产；不会创建资产，也不会调用核销接口。
+
+### 11.3 执行迁移
+
+```http
+POST /api/v1/integrations/platform/users/100001/migrations
+X-Clipli-Admin-Key: <operator-key>
+Content-Type: application/json
+
+{
+  "tplId": 100053,
+  "num": 1,
+  "requestNo": "HW-MIGRATION-100053-01",
+  "requestId": "migration-100053-01",
+  "accepted": true
+}
+```
+
+执行顺序为：创建 `pending_external_write_off` 镜像资产 → 校验外部持仓 → 调用海文发核销 → 核销成功后激活并立即核销 Clipli 镜像资产 → 发放 Creation Credits 和 CLIP。`requestId` 和 `requestNo` 均幂等；海文发失败时镜像资产保持不可用并记录失败状态。成功迁移返回 `creditsGranted`、`clipGranted` 和本地 `redemptionIds`，同一镜像资产不可再次核销。
+
+### 11.4 查询迁移记录
+
+```http
+GET /api/v1/integrations/platform/users/100001/migrations
+```
+
+生产环境应将 `X-Clipli-Admin-Key` 替换为正式用户鉴权、运营审批和审计权限；当前原型使用运营密钥保护不可逆迁移操作。

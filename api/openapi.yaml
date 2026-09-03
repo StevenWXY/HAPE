@@ -698,6 +698,102 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AssetSyncRunListEnvelope' }
 
+  /api/v1/integrations/platform/templates:
+    get:
+      tags: [Integrations]
+      summary: Read the Haiwen copyright-template catalog
+      operationId: listHaiwenTemplates
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: workId
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Haiwen templates with Clipli mapping readiness
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalTemplateListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/users/{userId}/migrations/preview:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+    post:
+      tags: [Integrations]
+      summary: Preview a Haiwen template-to-Clipli asset migration
+      operationId: previewHaiwenAssetMigration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalMigrationRequest' }
+      responses:
+        '200':
+          description: Read-only migration preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalMigrationPreviewEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/integrations/platform/users/{userId}/migrations:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 128 }
+    get:
+      tags: [Integrations]
+      summary: List Haiwen-to-Clipli asset migrations for a user
+      operationId: listHaiwenAssetMigrations
+      responses:
+        '200':
+          description: Migration audit records
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalMigrationListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    post:
+      tags: [Integrations]
+      summary: Write off Haiwen assets and activate matching Clipli mirror assets
+      description: Requires the configured operator credential. This is irreversible at Haiwen; after Haiwen accepts the write-off, Clipli activates and settles the matching mirror assets in the same migration, including Creation Credits and CLIP.
+      operationId: migrateHaiwenAsset
+      security:
+        - ClipliAdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalMigrationRequest' }
+      responses:
+        '201':
+          description: Migration completed and Clipli assets activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalMigrationResultEnvelope' }
+        '200':
+          description: Existing migration returned for an idempotent retry
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalMigrationResultEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/generations:
     post:
       tags: [Creation]
@@ -1155,9 +1251,9 @@ components:
         sourceCode: { type: string }
         externalAssetId: { type: string }
         externalUrl: { type: string, format: uri }
-        syncStatus: { type: string, enum: [synced, stale, failed] }
+        syncStatus: { type: string, enum: [synced, stale, failed, pending-write-off, external_write_off_failed, reconciliation_required, migrated] }
         lastSyncedAt: { type: string, format: date-time }
-        redemptionStatus: { type: string, enum: [available, redeemed, restricted] }
+        redemptionStatus: { type: string, enum: [available, redeemed, restricted, pending_external_write_off, external_write_off_failed, reconciliation_required] }
         canRedeem: { type: boolean }
         canExercise: { type: boolean }
 
@@ -1388,7 +1484,7 @@ components:
         providerCode: { type: string }
         providerAssetId: { type: string }
         assetUrl: { type: string, format: uri }
-        syncStatus: { type: string, enum: [synced, stale, failed] }
+        syncStatus: { type: string, enum: [synced, stale, failed, pending-write-off, external_write_off_failed, reconciliation_required, migrated] }
         lastSyncedAt: { type: string, format: date-time }
         dataVersion: { type: string }
 
@@ -1404,7 +1500,7 @@ components:
         nameKo: { type: string }
         value: { type: integer, minimum: 0 }
         currency: { type: string, examples: [CNY] }
-        status: { type: string }
+        status: { type: string, enum: [pending_external_write_off, external_write_off_failed, reconciliation_required, completed_rewards_settled] }
         statusEn: { type: string }
         statusKo: { type: string }
         transferable: { type: boolean, description: Eligible for HAPW exercise }
@@ -1418,7 +1514,7 @@ components:
         creditYield: { type: integer, minimum: 0 }
         clipPrice: { type: integer, minimum: 0 }
         exchangeAvailable: { type: boolean }
-        redemptionStatus: { type: string, enum: [available, redeemed, restricted] }
+        redemptionStatus: { type: string, enum: [available, redeemed, restricted, pending_external_write_off, external_write_off_failed, reconciliation_required] }
         authorization: { $ref: '#/components/schemas/Authorization' }
         provenance: { $ref: '#/components/schemas/Provenance' }
         media: { $ref: '#/components/schemas/AssetMedia' }
@@ -2065,6 +2161,140 @@ components:
         status: { type: string }
         sourceCode: { type: string }
         externalAssetId: { type: string }
+
+    ExternalParty:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+
+    ExternalAssetTemplate:
+      type: object
+      required: [tplId, name, description, image, workId, worksName, authors, owners, publishCount]
+      properties:
+        tplId: { type: integer, format: int64, minimum: 1 }
+        name: { type: string }
+        description: { type: string, description: Source HTML/text snapshot; clients must escape before rendering }
+        image: { type: string, format: uri }
+        workId: { type: integer, format: int64, minimum: 1 }
+        worksName: { type: string }
+        worksType: { type: integer, format: int64, nullable: true }
+        worksSubType: { type: integer, format: int64, nullable: true }
+        worksTypeName: { type: string }
+        authors: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
+        owners: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
+        publishCount: { type: integer, minimum: 0 }
+
+    ExternalAssetMappingRule:
+      type: object
+      required: [tplId, version, creditYield, clipPrice, currency, active]
+      properties:
+        tplId: { type: integer, format: int64, minimum: 1 }
+        version: { type: string }
+        creditYield: { type: integer, minimum: 1 }
+        clipPrice: { type: integer, minimum: 0 }
+        currency: { type: string }
+        active: { type: boolean }
+        effectiveFrom: { type: string, format: date }
+
+    ExternalTemplateView:
+      type: object
+      required: [template, migrationReady]
+      properties:
+        template: { $ref: '#/components/schemas/ExternalAssetTemplate' }
+        mapping: { $ref: '#/components/schemas/ExternalAssetMappingRule' }
+        migrationReady: { type: boolean }
+
+    ExternalTemplateListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, pageSize, retrievedAt, sourceOfTruth]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ExternalTemplateView' } }
+            total: { type: integer, minimum: 0 }
+            page: { type: integer, minimum: 1 }
+            pageSize: { type: integer, minimum: 1 }
+            retrievedAt: { type: string, format: date-time }
+            sourceOfTruth: { type: string, const: haiwen-/openapi/tpls }
+
+    ExternalMigrationRequest:
+      type: object
+      additionalProperties: false
+      required: [tplId, requestNo, requestId]
+      properties:
+        userId: { type: string, minLength: 1, maxLength: 128 }
+        externalUserId: { type: string, minLength: 1, maxLength: 128 }
+        tplId: { type: integer, format: int64, minimum: 1 }
+        num: { type: integer, minimum: 1, maximum: 100, default: 1 }
+        requestNo: { type: string, minLength: 1, maxLength: 128 }
+        requestId: { type: string, minLength: 8, maxLength: 100 }
+        accepted: { type: boolean, const: true }
+
+    ExternalMigration:
+      type: object
+      required: [id, requestId, requestNo, userId, externalUserId, tplId, quantity, mappingVersion, clipliAssetIds, status, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        requestId: { type: string }
+        requestNo: { type: string }
+        userId: { type: string }
+        externalUserId: { type: string }
+        tplId: { type: integer, format: int64 }
+        quantity: { type: integer, minimum: 1 }
+        mappingVersion: { type: string }
+        clipliAssetIds: { type: array, items: { type: string } }
+        redemptionIds: { type: array, items: { type: string } }
+        creditsGranted: { type: integer, minimum: 0 }
+        clipGranted: { type: integer, minimum: 0 }
+        externalRedemptionId: { type: string }
+        status: { type: string }
+        failureReason: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ExternalMigrationPreview:
+      type: object
+      required: [template, availableQuantity, requestedQuantity, candidateAssets, ready, reason]
+      properties:
+        template: { $ref: '#/components/schemas/ExternalAssetTemplate' }
+        mapping: { $ref: '#/components/schemas/ExternalAssetMappingRule' }
+        availableQuantity: { type: integer, minimum: 0 }
+        requestedQuantity: { type: integer, minimum: 1 }
+        candidateAssets: { type: array, items: { $ref: '#/components/schemas/HAPWAsset' } }
+        ready: { type: boolean }
+        reason: { type: string }
+
+    ExternalMigrationPreviewEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ExternalMigrationPreview' }
+
+    ExternalMigrationResultEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [migration, assets]
+          properties:
+            migration: { $ref: '#/components/schemas/ExternalMigration' }
+            assets: { type: array, items: { $ref: '#/components/schemas/HAPWAsset' } }
+
+    ExternalMigrationListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, totalItems]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ExternalMigration' } }
+            totalItems: { type: integer, minimum: 0 }
 
     ExternalAssetCount:
       type: object

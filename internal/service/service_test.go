@@ -31,6 +31,8 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","bound":true,"boundAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/assets/count"):
 			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","list":[{"tplId":100001,"count":3}]},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/tpls"):
+			body = `{"code":0,"message":"success","data":{"list":[{"tplId":100001,"name":"版权名称","description":"<p>版权描述</p>","image":"https://cdn.example.com/template.png","workId":100001,"worksName":"作品名称","worksType":1,"worksSubType":null,"worksTypeName":"影像","authors":[{"id":1,"name":"作者"}],"owners":[{"id":2,"name":"权利人"}],"publishCount":1000}],"total":1,"pageNum":1,"pageSize":20},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/write-off"):
 			body = `{"code":0,"message":"success","data":{"requestNo":"wo-1","externalUserId":"external-1","tplId":100001,"num":1,"status":"SUCCESS","writeOffAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
 		default:
@@ -53,8 +55,12 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 	if err != nil || len(assets) != 1 || assets[0].AssetID != "100001" || assets[0].Quantity != 3 {
 		t.Fatalf("assets=%#v err=%v", assets, err)
 	}
+	templates, err := platform.ListTemplates(context.Background(), 1, 20, 0)
+	if err != nil || len(templates.Items) != 1 || templates.Items[0].TplID != 100001 || templates.Items[0].Owners[0].Name != "权利人" {
+		t.Fatalf("templates=%#v err=%v", templates, err)
+	}
 	redeemed, err := platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-1"})
-	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 4 {
+	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 5 {
 		t.Fatalf("redeemed=%#v requests=%d err=%v", redeemed, len(requests), err)
 	}
 	if requests[0].Header.Get("x-app-id") != "100001" || requests[0].Header.Get("x-app-key") != "secret" {
@@ -62,6 +68,124 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 	}
 	if requests[2].URL.Query().Get("externalUserId") != "external-1" || requests[2].URL.Query().Get("tplIds") != "100001" {
 		t.Fatalf("asset count query=%s", requests[2].URL.RawQuery)
+	}
+}
+
+type migrationFake struct {
+	template domain.ExternalAssetTemplate
+	count    int
+	redeems  int
+	err      error
+}
+
+func (f *migrationFake) SendVerificationCode(context.Context, VerificationCodeRequest) (VerificationCodeDispatch, error) {
+	return VerificationCodeDispatch{}, nil
+}
+func (f *migrationFake) BindUser(context.Context, BindUserRequest) (ExternalBindingResult, error) {
+	return ExternalBindingResult{}, nil
+}
+func (f *migrationFake) ListAssets(context.Context, string) ([]domain.ExternalAssetHolding, error) {
+	return []domain.ExternalAssetHolding{{AssetID: "100053", Quantity: f.count}}, nil
+}
+func (f *migrationFake) ListAssetCounts(context.Context, string, []int64) ([]domain.ExternalAssetHolding, error) {
+	return []domain.ExternalAssetHolding{{AssetID: "100053", Quantity: f.count}}, nil
+}
+func (f *migrationFake) ListTemplates(context.Context, int, int, int64) (ExternalTemplatePage, error) {
+	return ExternalTemplatePage{Items: []domain.ExternalAssetTemplate{f.template}, Total: 1, Page: 1, PageSize: 20}, nil
+}
+func (f *migrationFake) RedeemAsset(_ context.Context, input ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
+	f.redeems++
+	if f.err != nil {
+		return ExternalRedemptionResult{}, f.err
+	}
+	return ExternalRedemptionResult{ExternalTxID: "haiwen-write-off-1", Status: "SUCCESS", TplID: input.TplID, Num: input.Num, Quantity: input.Num, RequestNo: input.RequestNo}, nil
+}
+
+func TestHaiwenTemplateMigrationCreatesMatchingClipliAssetBeforeLocalRedemption(t *testing.T) {
+	workType := int64(100002)
+	fake := &migrationFake{count: 2, template: domain.ExternalAssetTemplate{
+		TplID: 100053, Name: "测试222", Description: "<p>123123</p>", Image: "https://cdn.hnccc.com/template.jpeg",
+		WorkID: 100002, WorksName: "海直播百部短剧", WorksType: &workType,
+		Authors: []domain.ExternalParty{{ID: 100001, Name: "海直播传媒(海南)有限公司"}}, Owners: []domain.ExternalParty{{ID: 100000, Name: "海直播传媒(海南)有限公司"}}, PublishCount: 10000,
+	}}
+	state := store.SeedState()
+	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
+	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
+	svc.now = func() time.Time { return time.Date(2026, 9, 4, 8, 30, 0, 0, time.UTC) }
+	if err := svc.SetExternalAssetMappings([]domain.ExternalAssetMappingRule{{TplID: 100053, Version: "haiwen-2026-09-v1", CreditYield: 150, ClipPrice: 520, Currency: "CNY", Active: true}}); err != nil {
+		t.Fatal(err)
+	}
+	input := MigrateExternalAssetInput{UserID: "clip-user-migration", TplID: 100053, Num: 1, RequestNo: "HW-MIGRATION-100053-01", RequestID: "migration-100053-01", Accepted: true}
+	preview, err := svc.PreviewExternalAssetMigration(input)
+	if err != nil || !preview.Ready || preview.AvailableQuantity != 2 || len(preview.CandidateAssets) != 1 {
+		t.Fatalf("preview=%#v err=%v", preview, err)
+	}
+	if preview.CandidateAssets[0].RedemptionStatus != "pending_external_write_off" || preview.CandidateAssets[0].SourceTemplate.Description != fake.template.Description {
+		t.Fatalf("candidate=%#v", preview.CandidateAssets[0])
+	}
+	before := svc.Snapshot()
+	result, idempotent, err := svc.MigrateExternalAsset(input)
+	if err != nil || idempotent || fake.redeems != 1 || len(result.Assets) != 1 {
+		t.Fatalf("result=%#v idempotent=%v redeems=%d err=%v", result, idempotent, fake.redeems, err)
+	}
+	asset := result.Assets[0]
+	if result.Migration.Status != "completed_rewards_settled" || result.Migration.CreditsGranted != 150 || result.Migration.ClipGranted != 60 || asset.Name != fake.template.Name || asset.Media.PreviewURL != fake.template.Image || asset.RedemptionStatus != "redeemed" || asset.CreditYield != 150 {
+		t.Fatalf("migration=%#v asset=%#v", result.Migration, asset)
+	}
+	afterMigration := svc.Snapshot()
+	if afterMigration.GenerationAccount.Balance != before.GenerationAccount.Balance+150 || afterMigration.CLIP.Balance != before.CLIP.Balance+60 {
+		t.Fatalf("migration did not settle rewards: before=%#v after=%#v", before.GenerationAccount, afterMigration.GenerationAccount)
+	}
+	retry, idempotent, err := svc.MigrateExternalAsset(input)
+	if err != nil || !idempotent || retry.Migration.ID != result.Migration.ID || fake.redeems != 1 {
+		t.Fatalf("retry=%#v idempotent=%v redeems=%d err=%v", retry, idempotent, fake.redeems, err)
+	}
+	if _, _, err := svc.Redeem(RedemptionInput{RequestID: "clipli-redeem-100053-01", AssetID: asset.ID, Accepted: true}); apiErrorCode(err) != "hapw_not_redeemable" {
+		t.Fatalf("settled migrated asset was redeemable again: err=%v", err)
+	}
+}
+
+func TestHaiwenMigrationRequiresExplicitMappingAndKeepsFailedAssetInactive(t *testing.T) {
+	fake := &migrationFake{count: 1, template: domain.ExternalAssetTemplate{TplID: 100053, Name: "测试222", WorkID: 100002, WorksName: "海直播百部短剧", Owners: []domain.ExternalParty{{ID: 1, Name: "权利人"}}, PublishCount: 10000}}
+	state := store.SeedState()
+	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
+	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
+	input := MigrateExternalAssetInput{UserID: "clip-user-migration", TplID: 100053, Num: 1, RequestNo: "HW-MIGRATION-100053-FAIL", RequestID: "migration-100053-fail", Accepted: true}
+	if _, _, err := svc.MigrateExternalAsset(input); apiErrorCode(err) != "external_asset_mapping_required" {
+		t.Fatalf("unmapped migration error=%v", err)
+	}
+	if err := svc.SetExternalAssetMappings([]domain.ExternalAssetMappingRule{{TplID: 100053, Version: "v1", CreditYield: 150, Active: true}}); err != nil {
+		t.Fatal(err)
+	}
+	fake.err = &PlatformError{Status: http.StatusUnprocessableEntity, Code: "external_assets_insufficient", Message: "write-off failed"}
+	if _, _, err := svc.MigrateExternalAsset(input); apiErrorCode(err) != "external_assets_insufficient" {
+		t.Fatalf("failed migration error=%v", err)
+	}
+	migrations, _ := svc.ExternalMigrations("clip-user-migration")
+	if len(migrations) != 1 || migrations[0].Status != "external_write_off_failed" {
+		t.Fatalf("migrations=%#v", migrations)
+	}
+	asset, ok := svc.GetAsset(migrations[0].ClipliAssetIDs[0])
+	if !ok || asset.Transferable || asset.RedemptionStatus != "external_write_off_failed" {
+		t.Fatalf("failed staged asset=%#v", asset)
+	}
+}
+
+func TestHaiwenMigrationChecksClipTreasuryBeforeWriteOff(t *testing.T) {
+	fake := &migrationFake{count: 1, template: domain.ExternalAssetTemplate{TplID: 100053, Name: "测试222", WorkID: 100002, WorksName: "海直播百部短剧", Owners: []domain.ExternalParty{{ID: 1, Name: "权利人"}}, PublishCount: 10000}}
+	state := store.SeedState()
+	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
+	state.CLIPTreasury.TreasuryBalance = 0
+	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
+	if err := svc.SetExternalAssetMappings([]domain.ExternalAssetMappingRule{{TplID: 100053, Version: "v1", CreditYield: 150, Active: true}}); err != nil {
+		t.Fatal(err)
+	}
+	input := MigrateExternalAssetInput{UserID: "clip-user-migration", TplID: 100053, Num: 1, RequestNo: "HW-MIGRATION-TREASURY-01", RequestID: "migration-treasury-01", Accepted: true}
+	if _, _, err := svc.MigrateExternalAsset(input); apiErrorCode(err) != "clip_treasury_insufficient" {
+		t.Fatalf("treasury preflight error=%v", err)
+	}
+	if fake.redeems != 0 || len(svc.Snapshot().ExternalMigrations) != 0 || len(svc.Snapshot().Assets) != len(state.Assets) {
+		t.Fatalf("irreversible write-off was attempted before treasury preflight: redeems=%d", fake.redeems)
 	}
 }
 
