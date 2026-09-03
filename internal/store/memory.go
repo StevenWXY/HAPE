@@ -32,6 +32,7 @@ type State struct {
 	Bindings               []domain.ExternalPlatformBinding
 	ExternalRedemptions    []domain.ExternalAssetRedemption
 	ExternalTemplates      []domain.ExternalAssetTemplate
+	ExternalWorks          []domain.ExternalWork
 	ExternalAssetMappings  []domain.ExternalAssetMappingRule
 	ExternalMigrations     []domain.ExternalAssetMigration
 }
@@ -91,6 +92,10 @@ func cloneState(state State) State {
 	for index := range state.ExternalTemplates {
 		clone.ExternalTemplates[index] = cloneExternalTemplate(state.ExternalTemplates[index])
 	}
+	clone.ExternalWorks = make([]domain.ExternalWork, len(state.ExternalWorks))
+	for index := range state.ExternalWorks {
+		clone.ExternalWorks[index] = cloneExternalWork(state.ExternalWorks[index])
+	}
 	clone.ExternalAssetMappings = append([]domain.ExternalAssetMappingRule(nil), state.ExternalAssetMappings...)
 	clone.ExternalMigrations = append([]domain.ExternalAssetMigration(nil), state.ExternalMigrations...)
 	for index := range clone.ExternalMigrations {
@@ -112,5 +117,21 @@ func cloneExternalTemplate(value domain.ExternalAssetTemplate) domain.ExternalAs
 	}
 	clone.Authors = append([]domain.ExternalParty(nil), value.Authors...)
 	clone.Owners = append([]domain.ExternalParty(nil), value.Owners...)
+	return clone
+}
+
+func cloneExternalWork(value domain.ExternalWork) domain.ExternalWork {
+	clone := value
+	clone.Showcase = append([]string(nil), value.Showcase...)
+	clone.Authors = append([]domain.ExternalParty(nil), value.Authors...)
+	clone.Owners = append([]domain.ExternalParty(nil), value.Owners...)
+	if value.WorksType != nil {
+		worksType := *value.WorksType
+		clone.WorksType = &worksType
+	}
+	if value.WorksSubType != nil {
+		worksSubType := *value.WorksSubType
+		clone.WorksSubType = &worksSubType
+	}
 	return clone
 }

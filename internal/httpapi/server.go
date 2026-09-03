@@ -78,6 +78,7 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 		mux.HandleFunc("POST "+prefix+"/bindings", handler.bindExternalUser)
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/assets", handler.userAssets)
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/asset-counts", handler.userAssetCounts)
+		mux.HandleFunc("GET "+prefix+"/works", handler.externalWorks)
 		mux.HandleFunc("GET "+prefix+"/templates", handler.externalTemplates)
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/migrations", handler.externalMigrations)
 		mux.HandleFunc("POST "+prefix+"/users/{userID}/migrations/preview", handler.previewExternalMigration)
@@ -452,6 +453,15 @@ func (h *Handler) getExternalBinding(w http.ResponseWriter, r *http.Request) {
 	if userID == "" {
 		userID = r.URL.Query().Get("clipliUserId")
 	}
+	if userID == "" {
+		status, err := h.service.ExternalBindingStatus(r.URL.Query().Get("externalUserId"))
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": status})
+		return
+	}
 	binding, _, err := h.service.GetBinding(userID)
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -512,6 +522,15 @@ func (h *Handler) userAssetCounts(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) externalTemplates(w http.ResponseWriter, r *http.Request) {
 	workID := int64(queryInt(r, "workId", 0))
 	result, err := h.service.ExternalTemplates(queryInt(r, "page", 1), queryInt(r, "pageSize", 20), workID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (h *Handler) externalWorks(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ExternalWorks(queryInt(r, "page", 1), queryInt(r, "pageSize", 20))
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
@@ -663,14 +682,12 @@ func (h *Handler) assetRequirements(w http.ResponseWriter, _ *http.Request) {
 			{"method": "POST", "path": "/openapi/user/bind", "purpose": "validate the SMS code and create the binding", "requiredFields": []string{"externalUserId", "phone", "smsCode"}},
 			{"method": "GET", "path": "/openapi/user/assets/count?externalUserId={externalUserId}&tplIds={tplIds}", "purpose": "query redeemable counts by template", "requiredFields": []string{"externalUserId", "list[].tplId", "list[].count"}},
 			{"method": "POST", "path": "/openapi/asset/write-off", "purpose": "write off assets idempotently", "requiredFields": []string{"requestNo", "externalUserId", "tplId", "num"}},
-			{"method": "GET", "path": "/assets", "purpose": "full or cursor-based HAPW asset list; each record should include owner", "requiredFields": []string{"id", "tokenId", "name", "owner", "rightsHolder", "status", "authorization", "provenance"}},
-			{"method": "GET", "path": "/assets?owner={walletAddress}", "purpose": "recommended wallet portfolio query", "requiredFields": []string{"id", "tokenId", "name", "owner", "status", "externalUrl", "updatedAt"}},
-			{"method": "GET", "path": "/assets/{assetId}", "purpose": "single asset detail and current state", "requiredFields": []string{"id", "tokenId", "status", "owner", "externalUrl", "updatedAt"}},
-			{"method": "GET", "path": "/assets/{assetId}/authorization", "purpose": "rights scope and territories", "requiredFields": []string{"holder", "scope", "territories", "usageTypes", "validFrom"}},
-			{"method": "GET", "path": "/assets/{assetId}/media", "purpose": "linked work and preview metadata", "requiredFields": []string{"linkedWorkIds", "format"}},
-			{"method": "GET", "path": "/assets/{assetId}/events", "purpose": "issue, transfer and rights-state history", "requiredFields": []string{"eventId", "type", "status", "createdAt"}},
-			{"method": "GET", "path": "/works?assetId={assetId}", "purpose": "works linked to an external HAPW", "requiredFields": []string{"id", "title", "linkedAssetId", "externalUrl"}},
-			{"method": "POST", "path": "/webhooks/asset-events", "purpose": "optional near-real-time invalidation", "requiredFields": []string{"eventId", "assetId", "eventType", "occurredAt", "signature"}},
+		},
+		"clipliInternalTargetEndpoints": []map[string]any{
+			{"method": "GET", "path": "/api/v1/hapw/assets/{assetId}", "purpose": "Clipli normalized asset detail; not provided by Haiwen"},
+			{"method": "GET", "path": "/api/v1/hapw/assets/{assetId}/authorization", "purpose": "Clipli rights projection; source fields must be mapped explicitly"},
+			{"method": "GET", "path": "/api/v1/hapw/assets/{assetId}/history", "purpose": "Clipli audit timeline; not an upstream endpoint"},
+			{"method": "GET", "path": "/api/v1/wallet/assets", "purpose": "Clipli wallet view; Haiwen does not expose wallet assets"},
 		},
 		"normalization": map[string]any{"timeoutSeconds": 5, "maxResponseBytes": 2097152, "failureMode": "retain-last-known-snapshot", "writeBack": false},
 	}})

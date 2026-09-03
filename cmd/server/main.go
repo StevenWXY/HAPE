@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -84,7 +83,6 @@ func main() {
 		if platformClient.AppKey == "" {
 			platformClient.APIKey = os.Getenv("CLIPLI_EXTERNAL_PLATFORM_API_KEY")
 		}
-		platformClient.DefaultTplIDs = parseIntList(os.Getenv("CLIPLI_EXTERNAL_PLATFORM_TPL_IDS"))
 		serviceLayer.SetExternalPlatform(platformClient)
 		logger.Info("external platform integration configured", "baseURL", publicSourceURL(platformURL))
 	}
@@ -131,15 +129,4 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func parseIntList(raw string) []int64 {
-	values := make([]int64, 0)
-	for _, part := range strings.Split(raw, ",") {
-		value, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
-		if err == nil && value > 0 {
-			values = append(values, value)
-		}
-	}
-	return values
 }

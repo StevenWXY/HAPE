@@ -236,29 +236,30 @@ Content-Type: application/json
 
 ## 5. 外部资产源与 CLIP 金库 API
 
-Clipli 的 HAPW 数据以外部平台为事实来源，服务端只做规范化、校验、缓存和操作记录。平台接入方需要提供以下上游接口：
+Clipli 的海文发模板与作品目录以外部平台为事实来源，服务端只做规范化、校验、缓存和操作记录。海文发当前实际提供的最小上游接口只有以下七个：
 
 | 上游接口 | 必需字段 | 用途 |
 | --- | --- | --- |
-| `GET /assets` | `id`、`tokenId`、`name`、`owner`、`rightsHolder`、`status`、`authorization`、`provenance` | 首次全量或游标增量同步；`owner` 用于钱包资产过滤 |
-| `GET /assets?owner={walletAddress}`（推荐） | 同上 | 直接返回指定钱包的 HAPW 关联资产 |
-| `GET /assets/{id}` | `id`、`tokenId`、`status`、`owner`、`externalUrl`、`updatedAt` | 详情与状态校准 |
-| `GET /assets/{id}/authorization` | `holder`、`scope`、`territories`、`usageTypes`、`validFrom` | 授权边界 |
-| `GET /assets/{id}/media` | `linkedWorkIds`、`format` | 素材和作品关联 |
-| `GET /assets/{id}/events` | `eventId`、`type`、`status`、`createdAt` | 外部事件时间线 |
-| `GET /works?assetId={id}` | `id`、`title`、`linkedAssetId`、`externalUrl` | 作品关联 |
-| `POST /webhooks/asset-events`（可选推送通道） | `eventId`、`assetId`、`eventType`、`occurredAt`、`signature` | 外部平台向 Clipli 配置的接收地址推送近实时失效通知；方向、签名头和重试策略在接入时确认 |
+| `GET /openapi/works` | `workId`、`worksName`、`showcase`、`authors`、`owners`、`worksIntroduce`、`publishNum` | 作品目录；`publishNum` 只是发行统计 |
+| `GET /openapi/tpls` | `tplId`、`name`、`description`、`image`、`workId`、`authors`、`owners`、`publishCount` | 版权模板目录；`publishCount` 只是发行统计 |
+| `GET /openapi/user/bind/status` | `externalUserId`、`bound`、`boundAt` | 外部绑定事实源 |
+| `POST /openapi/user/bind/sms` | `externalUserId`、`phone` | 发送验证码；响应数据为空 |
+| `POST /openapi/user/bind` | `externalUserId`、`phone`、`smsCode`、成功时 `bound=true` | 完成绑定 |
+| `GET /openapi/user/assets/count` | `externalUserId`、`list[].tplId`、`list[].count` | 仅当前可核销数量，不是逐枚资产持仓 |
+| `POST /openapi/asset/write-off` | `requestNo`、`externalUserId`、`tplId`、`num` | 按模板批量核销；`requestNo` 是幂等号 |
+
+以下能力不是海文发当前接口：逐枚资产 ID/序列号、钱包资产列表、单枚资产详情、授权/媒体/事件子资源和 Webhook。它们只能作为 Clipli 内部目标接口或未来适配层能力，不能在海文发适配器中假定存在。
 
 对应的 Clipli 只读 API：
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` | `/api/v1/integrations/asset-requirements` | 返回上游接口、字段、超时、大小和失败降级规则 |
+| `GET` | `/api/v1/integrations/asset-requirements` | 返回海文发实际支持的上游接口，以及 Clipli 内部目标接口的明确分类 |
 | `GET` | `/api/v1/integrations/asset-sources` | 所有外部源的状态、地址、同步间隔和资产数量 |
 | `GET` | `/api/v1/integrations/asset-sources/{sourceCode}` | 单个平台源状态 |
 | `GET` | `/api/v1/integrations/asset-sync-runs` | 同步批次的读取、校验、保存数量和错误 |
 
-部署方为每个外部来源配置接入地址和凭据。合作方可以提供分页资产列表，也可以提供由网关聚合后的 `{ "data": [...] }` 规范化响应；具体地址、认证头和同步计划在接入登记时确认。服务端默认执行 5 秒超时、2 MiB 响应上限、字段校验和来源标记；同步失败时保留最近一次有效快照，并在同步记录中写入失败原因。
+部署方为每个外部来源配置接入地址和凭据。海文发作品、模板和计数响应使用其原始分页结构；服务端默认执行 5 秒超时、2 MiB 响应上限、字段校验和来源标记；同步失败时保留最近一次有效快照，并在同步记录中写入失败原因。
 
 CLIP 的公开 API 不提供铸币权限：`GET /api/v1/clip/treasury` 返回 BNB 合约的创世供应、治理预留/硬顶对应的本地金库快照、DEX 流动性配置、内部账本余额和守恒结果；`GET /api/v1/clip/distribution-rules` 返回中心化规则；`GET /api/v1/clip/distributions` 返回每次核销的分发流水。成功核销才按 `floor(creditYield × 0.40)` 从金库划拨，生成/授权/储备兑换费用回到金库；链上增发只能由延迟治理发行器执行。
 
@@ -301,24 +302,24 @@ Clipli 将验证码交给外部平台验证；`phone` 可选，省略时沿用�
 
 可通过 `GET /api/v1/integrations/platform/bindings?userId=clip-user-1001` 读取当前绑定状态。
 
-### 6.3 查询用户持仓
+### 6.3 查询用户可核销数量
 
 ```http
-GET /api/v1/integrations/platform/users/clip-user-1001/assets
+GET /api/v1/integrations/platform/users/clip-user-1001/assets?tplIds=100053
 ```
 
-响应中的 `items`、`assetCount` 和 `totalQuantity` 来自外部平台，`sourceOfTruth` 固定为 `external-platform`。未完成绑定的用户返回 `409 user_not_bound`。
+响应中的 `items` 只表达 `tplId -> 当前可核销数量`，`sourceOfTruth` 固定为 `haiwen-/openapi/user/assets/count`。它不是用户全部持仓、钱包资产列表、历史购买数量、独立资产 ID 或可自由转移数量；未完成绑定的用户返回 `409 user_not_bound`。不带 `tplIds` 的通用 `/assets` 仅适用于另有逐枚资产能力的适配器，海文发会返回不支持。
 
-### 6.4 按唯一流水号核销资产
+### 6.4 按模板数量核销海文发资产
 
 ```http
-POST /api/v1/integrations/platform/users/clip-user-1001/assets/asset-2048/redemptions
+POST /api/v1/integrations/platform/users/clip-user-1001/migrations
 Content-Type: application/json
 
-{"serialNumber":"serial-20260826-0001","requestId":"redeem-1001-0001"}
+{"tplId":100053,"num":1,"requestNo":"WO-100053-0001","requestId":"redeem-1001-0001","accepted":true}
 ```
 
-也可使用 `POST /api/v1/integrations/platform/redemptions`，在请求体中同时传入 `userId` 和 `assetId`；`serialNo` 作为 `serialNumber` 的兼容别名。Clipli 以 `userId + assetId + serialNumber` 去重，并将流水号原样传给外部平台，重复请求直接返回首次核销记录，不重复调用或核销。
+也可使用模板迁移接口完成“海文发批量核销 + Clipli 镜像资产创建”。海文发核销只接受 `requestNo`、`externalUserId`、`tplId`、`num`，`requestNo` 是幂等号而非交易 ID；不会返回真实外部交易哈希或逐枚资产 ID。逐枚 `serialNumber` 只适用于明确声明支持 itemized assets 的其他适配器。
 
 生产或测试联调时设置以下服务端变量。凭据永不下发前端，也不写入日志：
 
@@ -326,10 +327,9 @@ Content-Type: application/json
 CLIPLI_EXTERNAL_PLATFORM_URL=https://api-test.hnccc.com/api
 CLIPLI_EXTERNAL_PLATFORM_APP_ID=100001
 CLIPLI_EXTERNAL_PLATFORM_APP_KEY=<海文发 AppKey>
-CLIPLI_EXTERNAL_PLATFORM_TPL_IDS=100001,100002
 ```
 
-适配器按海文发协议调用 `POST /openapi/user/bind/sms`、`POST /openapi/user/bind`、`GET /openapi/user/bind/status`、`GET /openapi/user/assets/count` 和 `POST /openapi/asset/write-off`，请求头为 `x-app-id`、`x-app-key`。`CLIPLI_EXTERNAL_PLATFORM_TPL_IDS` 仅用于兼容的全量持仓查询；精确数量查询应传 `tplIds`。业务码 `400/401/404/409/422/429` 会映射为对应 HTTP 状态，重复 `requestNo` 返回首次核销结果。
+适配器按海文发协议调用 `GET /openapi/works`、`GET /openapi/tpls`、`POST /openapi/user/bind/sms`、`POST /openapi/user/bind`、`GET /openapi/user/bind/status`、`GET /openapi/user/assets/count` 和 `POST /openapi/asset/write-off`，请求头为 `x-app-id`、`x-app-key`。海文发没有全量逐枚资产列表；查询用户数据必须传 `tplIds`，返回值仅为当前可核销数量。业务码 `400/401/404/409/422/429` 会映射为对应 HTTP 状态，重复 `requestNo` 返回首次核销结果。
 
 ## 7. 平台兼容 API（非外部资产源必需）
 

@@ -17,7 +17,7 @@ Clipli 是以 HAPW 授权证书为核心的 AI 视频创作与资产行权原型
 
 作品和 HAPW 默认使用各外部平台的演示快照。部署时可设置 `WORK_SOURCE_URL` 接入作品 API，设置 `HAPW_ASSET_SOURCE_URL` 接入规范化 HAPW 资产 API；请求超时、状态码异常、字段不完整或返回为空时保留最后一次有效快照，并在同步记录中登记原因。
 
-外部平台手机号绑定和资产核销已提供联调框架：`POST /api/v1/integrations/platform/verification-codes` 发送验证码、`POST /api/v1/integrations/platform/bindings` 提交绑定、`GET /api/v1/integrations/platform/users/{userId}/assets?tplIds=100001,100002` 查询模板持仓数量、`POST /api/v1/integrations/platform/users/{userId}/assets/{assetId}/redemptions` 按唯一流水号核销。未配置 `CLIPLI_EXTERNAL_PLATFORM_URL` 时使用仅供演示的内存适配器；配置后由服务端按海文发协议调用 `/openapi/user/bind/sms`、`/openapi/user/bind`、`/openapi/user/assets/count` 和 `/openapi/asset/write-off`，认证头为 `x-app-id/x-app-key`。
+外部平台手机号绑定和资产核销已提供联调框架：`POST /api/v1/integrations/platform/verification-codes` 发送验证码、`POST /api/v1/integrations/platform/bindings` 提交绑定、`GET /api/v1/integrations/platform/users/{userId}/assets?tplIds=100001,100002` 查询模板当前可核销数量、`POST /api/v1/integrations/platform/users/{userId}/migrations` 按模板数量核销并创建 Clipli 镜像。未配置 `CLIPLI_EXTERNAL_PLATFORM_URL` 时使用仅供演示的内存适配器；配置后由服务端按海文发协议调用作品、模板、绑定、计数和批量核销接口，认证头为 `x-app-id/x-app-key`。
 
 ## 运行
 
@@ -66,7 +66,6 @@ PORT=4173 go run ./cmd/server
 CLIPLI_EXTERNAL_PLATFORM_URL=https://api-test.hnccc.com/api \
 CLIPLI_EXTERNAL_PLATFORM_APP_ID=100001 \
 CLIPLI_EXTERNAL_PLATFORM_APP_KEY=<海文发 AppKey> \
-CLIPLI_EXTERNAL_PLATFORM_TPL_IDS=100001,100002 \
 PORT=4173 go run ./cmd/server
 ```
 
@@ -76,9 +75,9 @@ PORT=4173 go run ./cmd/server
 CLIPLI_EXTERNAL_ASSET_MAPPINGS='[{"tplId":100053,"version":"haiwen-2026-09-v1","creditYield":150,"clipPrice":520,"currency":"CNY","active":true}]'
 ```
 
-`GET /api/v1/integrations/platform/templates` 只读获取海文发 `/openapi/tpls` 模板并返回映射状态；`POST /api/v1/integrations/platform/users/{userId}/migrations/preview` 只读校验模板、持仓数量和候选镜像资产；真正迁移接口需要 `X-Clipli-Admin-Key`，会按 `requestNo` 幂等地创建待核销的 Clipli 镜像资产并核销海文发资产。海文发核销成功后，Clipli 会在同一笔迁移中激活并核销镜像资产，自动结算 Creation Credits 和 CLIP；镜像资产不能再次核销。
+`GET /api/v1/integrations/platform/works` 只读获取海文发 `/openapi/works` 作品目录（`publishNum` 仅为发行统计）；`GET /api/v1/integrations/platform/templates` 只读获取海文发 `/openapi/tpls` 模板并返回映射状态；`POST /api/v1/integrations/platform/users/{userId}/migrations/preview` 只读校验模板、当前可核销数量和候选镜像资产；真正迁移接口需要 `X-Clipli-Admin-Key`，会按 `requestNo` 幂等地创建待核销的 Clipli 镜像资产并核销海文发资产。海文发核销成功后，Clipli 会在同一笔迁移中激活并核销镜像资产，自动结算 Creation Credits 和 CLIP；镜像资产不能再次核销。
 
-`CLIPLI_EXTERNAL_PLATFORM_TPL_IDS` 用于未带 `tplIds` 的兼容持仓查询；按模板查询时直接在 URL 传入 `tplIds`。生产环境将 URL 替换为 `https://api.hnccc.com/api`，并使用独立生产凭据。
+海文发适配器不支持未带 `tplIds` 的全量资产列表；查询用户数据时必须在 URL 传入 `tplIds`，返回值仅为当前可核销数量。生产环境将 URL 替换为 `https://api.hnccc.com/api`，并使用独立生产凭据。
 
 不配置上述变量时，公开钱包资产、资格和空投查询仍可用，运营创建与执行器回调接口返回配置缺失。外部执行器应轮询 `GET /api/v1/admin/airdrops`，使用平台托管钱包完成 CLIP 转账，再回调 `POST /api/v1/internal/airdrops/{id}/result`。详细请求体、规则公式和安全边界见 [docs/API.md](docs/API.md) 的“钱包资产与 CLIP 空投 API”。
 

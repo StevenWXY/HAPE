@@ -27,15 +27,27 @@ import (
 type ExternalPlatformClient interface {
 	SendVerificationCode(ctx context.Context, input VerificationCodeRequest) (VerificationCodeDispatch, error)
 	BindUser(ctx context.Context, input BindUserRequest) (ExternalBindingResult, error)
-	ListAssets(ctx context.Context, userID string) ([]domain.ExternalAssetHolding, error)
 	RedeemAsset(ctx context.Context, input ExternalRedemptionRequest) (ExternalRedemptionResult, error)
 }
 
+// ExternalAssetPortfolio is optional because Haiwen exposes only template
+// counts, not itemized asset records.
+type ExternalAssetPortfolio interface {
+	ListAssets(ctx context.Context, userID string) ([]domain.ExternalAssetHolding, error)
+}
+
 // ExternalAssetCounter is implemented by adapters that support the partner's
-// template-count endpoint. Older adapters can keep implementing ListAssets;
-// the service falls back to that method when this optional capability is absent.
+// narrow template-count endpoint. The service never substitutes itemized
+// holdings for this contract because a count is not an asset identity.
 type ExternalAssetCounter interface {
-	ListAssetCounts(ctx context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalAssetHolding, error)
+	ListAssetCounts(ctx context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalTemplateCount, error)
+}
+
+// ExternalBindingStatusReader is optional but should be implemented by
+// production adapters. Local binding state is never treated as authoritative
+// when the partner can confirm it.
+type ExternalBindingStatusReader interface {
+	GetBindingStatus(ctx context.Context, externalUserID string) (ExternalBindingStatus, error)
 }
 
 // ExternalTemplateCatalog is implemented by adapters that expose the source
@@ -44,11 +56,37 @@ type ExternalTemplateCatalog interface {
 	ListTemplates(ctx context.Context, page, pageSize int, workID int64) (ExternalTemplatePage, error)
 }
 
+type ExternalWorkCatalog interface {
+	ListWorks(ctx context.Context, page, pageSize int) (ExternalWorkPage, error)
+}
+
+type ExternalTemplateWriter interface {
+	WriteOffTemplate(ctx context.Context, input ExternalTemplateWriteOffRequest) (ExternalRedemptionResult, error)
+}
+
+type ExternalItemizedAssetCapability interface {
+	SupportsItemizedAssets() bool
+}
+
 type ExternalTemplatePage struct {
 	Items    []domain.ExternalAssetTemplate `json:"items"`
 	Total    int                            `json:"total"`
 	Page     int                            `json:"page"`
 	PageSize int                            `json:"pageSize"`
+}
+
+type ExternalWorkPage struct {
+	Items    []domain.ExternalWork `json:"items"`
+	Total    int                   `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"pageSize"`
+}
+
+type ExternalTemplateWriteOffRequest struct {
+	ExternalUserID string `json:"externalUserId"`
+	TplID          int64  `json:"tplId"`
+	Num            int    `json:"num"`
+	RequestNo      string `json:"requestNo"`
 }
 
 type VerificationCodeRequest struct {
@@ -178,9 +216,9 @@ func (s *Service) SendVerificationCode(input SendVerificationInput) (Verificatio
 	if !validUserID(userID) {
 		return result, apiError(http.StatusBadRequest, "invalid_user_id", "A valid userId is required")
 	}
-	externalUserID := normalizeExternalUserID(input.ExternalUserID, userID)
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
 	if !validUserID(externalUserID) {
-		return result, apiError(http.StatusBadRequest, "invalid_external_user_id", "A valid externalUserId is required")
+		return result, apiError(http.StatusBadRequest, "invalid_external_user_id", "A valid externalUserId is required; it cannot be inferred from a Clipli userId")
 	}
 	if !ok {
 		return result, apiError(http.StatusBadRequest, "invalid_phone", "A valid phone number is required")
@@ -193,7 +231,7 @@ func (s *Service) SendVerificationCode(input SendVerificationInput) (Verificatio
 	if input.RequestID != "" {
 		for _, item := range s.Snapshot().VerificationChallenges {
 			if item.RequestID == input.RequestID {
-				if item.UserID != userID || item.Phone != phone {
+				if item.UserID != userID || item.ExternalUserID != externalUserID || item.Phone != phone {
 					return result, apiError(http.StatusConflict, "request_id_reused", "The requestId is already used for another verification request")
 				}
 				return VerificationResult{Challenge: item}, nil
@@ -206,17 +244,25 @@ func (s *Service) SendVerificationCode(input SendVerificationInput) (Verificatio
 	}
 	now := s.now().UTC()
 	expiresAt := dispatch.ExpiresAt
+	expiresAtSource := "clipli-local"
 	if expiresAt == "" {
 		expiresAt = now.Add(5 * time.Minute).Format(time.RFC3339)
 	} else if _, parseErr := time.Parse(time.RFC3339, expiresAt); parseErr != nil {
 		expiresAt = now.Add(5 * time.Minute).Format(time.RFC3339)
+	} else {
+		expiresAtSource = "adapter-reported"
 	}
 	// Any successful dispatch is a pending challenge from Clipli's point of
 	// view; partner-specific delivery states are not used for local matching.
 	status := "sent"
+	deliveryID := strings.TrimSpace(dispatch.DeliveryID)
+	deliveryIDSource := ""
+	if deliveryID != "" {
+		deliveryIDSource = "adapter-reported"
+	}
 	challenge := domain.VerificationChallenge{
 		ID: uniqueID("verification", now), UserID: userID, ExternalUserID: externalUserID, Phone: phone, PhoneMasked: maskPhone(phone),
-		DeliveryID: dispatch.DeliveryID, Status: status, ExpiresAt: expiresAt, CreatedAt: now.Format(time.RFC3339), RequestID: input.RequestID,
+		DeliveryID: deliveryID, DeliveryIDSource: deliveryIDSource, Status: status, ExpiresAt: expiresAt, ExpiresAtSource: expiresAtSource, CreatedAt: now.Format(time.RFC3339), RequestID: input.RequestID,
 	}
 	err = s.store.Update(func(state *store.State) error {
 		state.VerificationChallenges = prepend(challenge, state.VerificationChallenges)
@@ -300,8 +346,9 @@ func (s *Service) BindUser(input BindUserInput) (BindingResult, bool, error) {
 			return result, idempotent, nil
 		}
 	}
+	requestedExternalUserID := strings.TrimSpace(input.ExternalUserID)
 	for _, item := range state.VerificationChallenges {
-		if item.UserID == userID && (phone == "" || item.Phone == phone) && item.Status == "sent" && (input.VerificationID == "" || item.ID == input.VerificationID) {
+		if item.UserID == userID && (requestedExternalUserID == "" || item.ExternalUserID == requestedExternalUserID) && (phone == "" || item.Phone == phone) && item.Status == "sent" && (input.VerificationID == "" || item.ID == input.VerificationID) {
 			challenge = item
 			break
 		}
@@ -315,9 +362,9 @@ func (s *Service) BindUser(input BindUserInput) (BindingResult, bool, error) {
 	if phone == "" {
 		phone = challenge.Phone
 	}
-	externalUserID := normalizeExternalUserID(input.ExternalUserID, challenge.ExternalUserID)
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
 	if externalUserID == "" {
-		externalUserID = userID
+		externalUserID = strings.TrimSpace(challenge.ExternalUserID)
 	}
 	if !validUserID(externalUserID) {
 		return result, false, apiError(http.StatusBadRequest, "invalid_external_user_id", "A valid externalUserId is required")
@@ -326,6 +373,9 @@ func (s *Service) BindUser(input BindUserInput) (BindingResult, bool, error) {
 	if err != nil {
 		return result, false, mapPlatformError(err)
 	}
+	if !external.Bound {
+		return result, false, apiError(http.StatusBadGateway, "external_binding_not_confirmed", "The external platform did not confirm bound=true")
+	}
 	externalUserID = strings.TrimSpace(external.ExternalUserID)
 	if externalUserID == "" {
 		externalUserID = strings.TrimSpace(external.UserID)
@@ -333,11 +383,22 @@ func (s *Service) BindUser(input BindUserInput) (BindingResult, bool, error) {
 	if externalUserID == "" {
 		return result, false, apiError(http.StatusBadGateway, "external_binding_invalid", "The external platform did not return an external user ID")
 	}
+	expectedExternalUserID := strings.TrimSpace(input.ExternalUserID)
+	if expectedExternalUserID == "" {
+		expectedExternalUserID = strings.TrimSpace(challenge.ExternalUserID)
+	}
+	if externalUserID != expectedExternalUserID {
+		return result, false, apiError(http.StatusConflict, "external_binding_mismatch", "The external platform returned a different external user ID")
+	}
 	now := s.now().UTC()
 	// A successful adapter response establishes the Clipli-side bound state;
 	// partner-specific status values are intentionally not used as local state.
 	status := "bound"
-	binding := domain.ExternalPlatformBinding{ID: external.BindingID, UserID: userID, ExternalUserID: externalUserID, Phone: phone, PhoneMasked: maskPhone(phone), PlatformCode: "external-platform", Status: status, BoundAt: now.Format(time.RFC3339), VerificationID: challenge.ID, RequestID: input.RequestID}
+	boundAt := strings.TrimSpace(external.BoundAt)
+	if parsed, parseErr := time.Parse(time.RFC3339, boundAt); parseErr != nil || parsed.IsZero() {
+		boundAt = now.Format(time.RFC3339)
+	}
+	binding := domain.ExternalPlatformBinding{ID: external.BindingID, UserID: userID, ExternalUserID: externalUserID, Phone: phone, PhoneMasked: maskPhone(phone), PlatformCode: "external-platform", Status: status, BoundAt: boundAt, VerificationID: challenge.ID, RequestID: input.RequestID}
 	if binding.ID == "" {
 		binding.ID = uniqueID("binding", now)
 	}
@@ -396,7 +457,11 @@ func (s *Service) UserAssets(userID string) (UserAssetsResult, error) {
 	if !ok {
 		return result, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
 	}
-	items, err := s.platform.ListAssets(context.Background(), binding.ExternalUserID)
+	portfolio, supported := s.platform.(ExternalAssetPortfolio)
+	if !supported {
+		return result, apiError(http.StatusNotImplemented, "external_asset_portfolio_unsupported", "Haiwen exposes template counts, not itemized asset holdings")
+	}
+	items, err := portfolio.ListAssets(context.Background(), binding.ExternalUserID)
 	if err != nil {
 		return result, mapPlatformError(err)
 	}
@@ -443,24 +508,20 @@ func (s *Service) UserAssetCounts(userID string, tplIDs []int64) (UserAssetCount
 		return result, mapPlatformError(err)
 	}
 	if items == nil {
-		items = make([]domain.ExternalAssetHolding, 0)
+		items = make([]domain.ExternalTemplateCount, 0)
 	}
 	counts := make([]ExternalAssetCount, 0, len(items))
-	seen := make(map[int64]bool, len(items))
+	countsByTemplate := make(map[int64]int, len(items))
 	for _, item := range items {
-		tplID, parseErr := strconv.ParseInt(strings.TrimSpace(item.AssetID), 10, 64)
-		if parseErr != nil || tplID <= 0 {
+		if item.TplID <= 0 {
 			continue
 		}
-		counts = append(counts, ExternalAssetCount{TplID: tplID, Count: maxInt(item.Quantity, 0)})
-		seen[tplID] = true
+		countsByTemplate[item.TplID] = maxInt(item.Count, 0)
 	}
 	for _, tplID := range tplIDs {
-		if !seen[tplID] {
-			counts = append(counts, ExternalAssetCount{TplID: tplID, Count: 0})
-		}
+		counts = append(counts, ExternalAssetCount{TplID: tplID, Count: countsByTemplate[tplID]})
 	}
-	result = UserAssetCountsResult{UserID: userID, ExternalUserID: binding.ExternalUserID, Items: counts, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "external-platform"}
+	result = UserAssetCountsResult{UserID: userID, ExternalUserID: binding.ExternalUserID, Items: counts, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "haiwen-/openapi/user/assets/count"}
 	return result, nil
 }
 
@@ -482,7 +543,59 @@ func (s *Service) GetBinding(userID string) (domain.ExternalPlatformBinding, boo
 	if !ok {
 		return domain.ExternalPlatformBinding{}, false, apiError(http.StatusNotFound, "binding_not_found", "The Clipli user is not bound to the external platform")
 	}
+	if reader, supported := s.platform.(ExternalBindingStatusReader); supported {
+		status, err := reader.GetBindingStatus(context.Background(), binding.ExternalUserID)
+		if err != nil {
+			return domain.ExternalPlatformBinding{}, false, mapPlatformError(err)
+		}
+		if !status.Bound {
+			return domain.ExternalPlatformBinding{}, false, apiError(http.StatusNotFound, "binding_not_found", "The external platform no longer reports this user as bound")
+		}
+		if strings.TrimSpace(status.ExternalUserID) != "" && strings.TrimSpace(status.ExternalUserID) != binding.ExternalUserID {
+			return domain.ExternalPlatformBinding{}, false, apiError(http.StatusConflict, "external_binding_mismatch", "The external platform returned a different external user ID")
+		}
+		if boundAt := validExternalBoundAt(status.BoundAt); boundAt != "" && boundAt != binding.BoundAt {
+			binding.BoundAt = boundAt
+			_ = s.store.Update(func(state *store.State) error {
+				for index := range state.Bindings {
+					if state.Bindings[index].ID == binding.ID {
+						state.Bindings[index].BoundAt = boundAt
+					}
+				}
+				return nil
+			})
+		}
+	}
 	return binding, true, nil
+}
+
+func (s *Service) ExternalBindingStatus(externalUserID string) (ExternalBindingStatus, error) {
+	externalUserID = strings.TrimSpace(externalUserID)
+	if !validUserID(externalUserID) {
+		return ExternalBindingStatus{}, apiError(http.StatusBadRequest, "invalid_external_user_id", "A valid externalUserId is required")
+	}
+	reader, ok := s.platform.(ExternalBindingStatusReader)
+	if !ok {
+		return ExternalBindingStatus{}, apiError(http.StatusNotImplemented, "external_binding_status_unsupported", "The configured external platform does not expose binding status")
+	}
+	status, err := reader.GetBindingStatus(context.Background(), externalUserID)
+	if err != nil {
+		return ExternalBindingStatus{}, mapPlatformError(err)
+	}
+	if strings.TrimSpace(status.ExternalUserID) == "" {
+		status.ExternalUserID = externalUserID
+	} else if strings.TrimSpace(status.ExternalUserID) != externalUserID {
+		return ExternalBindingStatus{}, apiError(http.StatusConflict, "external_binding_mismatch", "The external platform returned a different external user ID")
+	}
+	return status, nil
+}
+
+func validExternalBoundAt(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil && !parsed.IsZero() {
+		return value
+	}
+	return ""
 }
 
 type ExternalTemplateView struct {
@@ -538,6 +651,40 @@ func (s *Service) ExternalTemplates(page, pageSize int, workID int64) (ExternalT
 		views = append(views, ExternalTemplateView{Template: template, Mapping: mappingPointer, MigrationReady: mapped})
 	}
 	return ExternalTemplatesResult{Items: views, Total: remote.Total, Page: remote.Page, PageSize: remote.PageSize, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "haiwen-/openapi/tpls"}, nil
+}
+
+type ExternalWorksResult struct {
+	Items         []domain.ExternalWork `json:"items"`
+	Total         int                   `json:"total"`
+	Page          int                   `json:"page"`
+	PageSize      int                   `json:"pageSize"`
+	RetrievedAt   string                `json:"retrievedAt"`
+	SourceOfTruth string                `json:"sourceOfTruth"`
+}
+
+// ExternalWorks reads Haiwen's published work catalog. publishNum is retained
+// as a catalog statistic and is never used as a holding or migration amount.
+func (s *Service) ExternalWorks(page, pageSize int) (ExternalWorksResult, error) {
+	var result ExternalWorksResult
+	catalog, ok := s.platform.(ExternalWorkCatalog)
+	if !ok {
+		return result, apiError(http.StatusNotImplemented, "external_work_catalog_unsupported", "The configured external platform does not expose a work catalog")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		return result, apiError(http.StatusBadRequest, "invalid_page_size", "pageSize cannot exceed 100")
+	}
+	remote, err := catalog.ListWorks(context.Background(), page, pageSize)
+	if err != nil {
+		return result, mapPlatformError(err)
+	}
+	s.cacheExternalWorks(remote.Items)
+	return ExternalWorksResult{Items: remote.Items, Total: remote.Total, Page: remote.Page, PageSize: remote.PageSize, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "haiwen-/openapi/works"}, nil
 }
 
 // SetExternalAssetMappings replaces the server-managed Haiwen economics
@@ -761,7 +908,12 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 		})
 	}
 
-	external, err := s.platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{UserID: userID, ExternalUserID: binding.ExternalUserID, AssetID: strconv.FormatInt(input.TplID, 10), SerialNumber: requestNo, RequestNo: requestNo, TplID: input.TplID, Num: num, RequestID: input.RequestID})
+	writer, supported := s.platform.(ExternalTemplateWriter)
+	if !supported {
+		markFailed("external_write_off_failed", "The configured adapter does not expose Haiwen's template batch write-off contract")
+		return result, false, apiError(http.StatusNotImplemented, "external_template_write_off_unsupported", "The configured external platform does not support template batch write-off")
+	}
+	external, err := writer.WriteOffTemplate(context.Background(), ExternalTemplateWriteOffRequest{ExternalUserID: binding.ExternalUserID, RequestNo: requestNo, TplID: input.TplID, Num: num})
 	if err != nil {
 		markFailed("external_write_off_failed", err.Error())
 		return result, false, mapPlatformError(err)
@@ -829,7 +981,7 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 				}
 			}
 		}
-		externalRedemption := domain.ExternalAssetRedemption{ID: uniqueID("external-redemption", now), UserID: userID, ExternalUserID: binding.ExternalUserID, AssetID: strconv.FormatInt(input.TplID, 10), SerialNumber: requestNo, RequestNo: requestNo, TplID: input.TplID, Num: num, ExternalTxID: externalTxID, Quantity: num, Status: "completed", RequestID: input.RequestID, RedeemedAt: now.Format(time.RFC3339)}
+		externalRedemption := domain.ExternalAssetRedemption{ID: uniqueID("external-redemption", now), UserID: userID, ExternalUserID: binding.ExternalUserID, RequestNo: requestNo, TplID: input.TplID, Num: num, ExternalTxID: externalTxID, Quantity: num, Mode: "template_batch_write_off", Status: "completed", RequestID: input.RequestID, RedeemedAt: now.Format(time.RFC3339)}
 		redemptionExists := false
 		for _, existing := range current.ExternalRedemptions {
 			if existing.UserID == userID && existing.RequestNo == requestNo {
@@ -959,8 +1111,8 @@ func (s *Service) externalHoldingCount(externalUserID string, tplID int64) (int,
 		return 0, mapPlatformError(err)
 	}
 	for _, item := range items {
-		if parseTemplateID(item.AssetID) == tplID {
-			return maxInt(item.Quantity, 0), nil
+		if item.TplID == tplID {
+			return maxInt(item.Count, 0), nil
 		}
 	}
 	return 0, nil
@@ -985,6 +1137,29 @@ func cacheExternalTemplates(state *store.State, templates []domain.ExternalAsset
 		}
 		if !replaced {
 			state.ExternalTemplates = append(state.ExternalTemplates, template)
+		}
+	}
+}
+
+func (s *Service) cacheExternalWorks(works []domain.ExternalWork) {
+	_ = s.store.Update(func(state *store.State) error {
+		cacheExternalWorks(state, works)
+		return nil
+	})
+}
+
+func cacheExternalWorks(state *store.State, works []domain.ExternalWork) {
+	for _, work := range works {
+		replaced := false
+		for index := range state.ExternalWorks {
+			if state.ExternalWorks[index].WorkID == work.WorkID {
+				state.ExternalWorks[index] = work
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			state.ExternalWorks = append(state.ExternalWorks, work)
 		}
 	}
 }
@@ -1134,6 +1309,9 @@ func (s *Service) RedeemExternalAsset(input RedeemExternalAssetInput) (ExternalR
 	if !ok {
 		return result, false, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
 	}
+	if capability, declared := s.platform.(ExternalItemizedAssetCapability); declared && !capability.SupportsItemizedAssets() {
+		return result, false, apiError(http.StatusNotImplemented, "external_itemized_asset_unsupported", "Haiwen supports template batch write-off only; no individual asset ID or serial number exists")
+	}
 	if requestedExternal := strings.TrimSpace(input.ExternalUserID); requestedExternal != "" && requestedExternal != binding.ExternalUserID {
 		return result, false, apiError(http.StatusConflict, "binding_conflict", "The Clipli user is bound to a different external user")
 	}
@@ -1191,7 +1369,7 @@ func (s *Service) RedeemExternalAsset(input RedeemExternalAssetInput) (ExternalR
 	if external.RequestNo != "" {
 		requestNo = strings.TrimSpace(external.RequestNo)
 	}
-	record := domain.ExternalAssetRedemption{ID: uniqueID("external-redemption", now), UserID: userID, ExternalUserID: binding.ExternalUserID, AssetID: assetID, SerialNumber: serialNumber, RequestNo: requestNo, TplID: tplID, Num: num, ExternalTxID: externalTxID, Quantity: quantity, Status: status, RequestID: input.RequestID, RedeemedAt: now.Format(time.RFC3339)}
+	record := domain.ExternalAssetRedemption{ID: uniqueID("external-redemption", now), UserID: userID, ExternalUserID: binding.ExternalUserID, AssetID: assetID, SerialNumber: serialNumber, RequestNo: requestNo, TplID: tplID, Num: num, ExternalTxID: externalTxID, Quantity: quantity, Mode: "itemized_asset", Status: status, RequestID: input.RequestID, RedeemedAt: now.Format(time.RFC3339)}
 	err = s.store.Update(func(state *store.State) error {
 		for _, item := range state.ExternalRedemptions {
 			if item.UserID == userID && item.AssetID == assetID && item.SerialNumber == serialNumber {
@@ -1207,14 +1385,6 @@ func (s *Service) RedeemExternalAsset(input RedeemExternalAssetInput) (ExternalR
 }
 
 func normalizeUserID(value string) string { return strings.TrimSpace(value) }
-
-func normalizeExternalUserID(value string, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value != "" {
-		return value
-	}
-	return strings.TrimSpace(fallback)
-}
 
 func maxInt(value, floor int) int {
 	if value < floor {
@@ -1346,9 +1516,23 @@ func (p *DemoExternalPlatform) BindUser(_ context.Context, input BindUserRequest
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	externalID := "demo-user-" + input.UserID
+	externalID := strings.TrimSpace(input.ExternalUserID)
+	if externalID == "" {
+		externalID = "demo-user-" + input.UserID
+	}
 	p.bindings[input.UserID] = externalID
-	return ExternalBindingResult{ExternalUserID: externalID, BindingID: "demo-binding-" + input.UserID, Status: "bound"}, nil
+	return ExternalBindingResult{ExternalUserID: externalID, BindingID: "demo-binding-" + input.UserID, Status: "bound", Bound: true, BoundAt: time.Now().UTC().Format(time.RFC3339)}, nil
+}
+
+func (p *DemoExternalPlatform) GetBindingStatus(_ context.Context, externalUserID string) (ExternalBindingStatus, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, boundExternalID := range p.bindings {
+		if boundExternalID == strings.TrimSpace(externalUserID) {
+			return ExternalBindingStatus{ExternalUserID: boundExternalID, Bound: true}, nil
+		}
+	}
+	return ExternalBindingStatus{ExternalUserID: strings.TrimSpace(externalUserID), Bound: false}, nil
 }
 
 func (p *DemoExternalPlatform) ListAssets(_ context.Context, externalUserID string) ([]domain.ExternalAssetHolding, error) {
@@ -1363,13 +1547,15 @@ func (p *DemoExternalPlatform) ListAssets(_ context.Context, externalUserID stri
 	return items, nil
 }
 
-func (p *DemoExternalPlatform) ListAssetCounts(_ context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalAssetHolding, error) {
+func (p *DemoExternalPlatform) SupportsItemizedAssets() bool { return true }
+
+func (p *DemoExternalPlatform) ListAssetCounts(_ context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalTemplateCount, error) {
 	if strings.TrimSpace(externalUserID) == "" {
 		return nil, &PlatformError{Status: http.StatusNotFound, Code: "external_user_not_found", Message: "The external user was not found"}
 	}
-	items := make([]domain.ExternalAssetHolding, 0, len(tplIDs))
+	items := make([]domain.ExternalTemplateCount, 0, len(tplIDs))
 	for _, tplID := range tplIDs {
-		items = append(items, domain.ExternalAssetHolding{AssetID: strconv.FormatInt(tplID, 10), Quantity: 1, Status: "available", SourceCode: "demo-platform"})
+		items = append(items, domain.ExternalTemplateCount{TplID: tplID, Count: 1, SourceCode: "demo-platform"})
 	}
 	return items, nil
 }
@@ -1387,6 +1573,18 @@ func (p *DemoExternalPlatform) ListTemplates(_ context.Context, page, pageSize i
 		templates = []domain.ExternalAssetTemplate{}
 	}
 	return ExternalTemplatePage{Items: templates, Total: len(templates), Page: page, PageSize: pageSize}, nil
+}
+
+func (p *DemoExternalPlatform) ListWorks(_ context.Context, page, pageSize int) (ExternalWorkPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	workType := int64(100002)
+	works := []domain.ExternalWork{{WorkID: 100001, WorksName: "演示作品", Showcase: []string{"https://example.com/demo-work.png"}, Authors: []domain.ExternalParty{{ID: 100001, Name: "演示作者"}}, Owners: []domain.ExternalParty{{ID: 100001, Name: "演示权利人"}}, WorksType: &workType, WorksTypeName: "影视", WorksIntroduce: "演示作品", PublishNum: 100}}
+	return ExternalWorkPage{Items: works, Total: len(works), Page: page, PageSize: pageSize}, nil
 }
 
 func (p *DemoExternalPlatform) RedeemAsset(_ context.Context, input ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
@@ -1415,16 +1613,19 @@ func (p *DemoExternalPlatform) RedeemAsset(_ context.Context, input ExternalRede
 	return ExternalRedemptionResult{ExternalTxID: "demo-redeem-" + requestNo, RequestNo: requestNo, TplID: input.TplID, Num: num, Status: "SUCCESS", Quantity: num}, nil
 }
 
+func (p *DemoExternalPlatform) WriteOffTemplate(ctx context.Context, input ExternalTemplateWriteOffRequest) (ExternalRedemptionResult, error) {
+	return p.RedeemAsset(ctx, ExternalRedemptionRequest{ExternalUserID: input.ExternalUserID, TplID: input.TplID, Num: input.Num, RequestNo: input.RequestNo})
+}
+
 // HTTPExternalPlatform is a deliberately conservative adapter for the next
 // integration phase. Its endpoint paths and JSON are stable defaults that can
 // be finalized with the partner without changing Clipli's service contract.
 type HTTPExternalPlatform struct {
-	BaseURL       string
-	Client        *http.Client
-	AppID         string
-	AppKey        string
-	APIKey        string // Deprecated compatibility alias for AppKey.
-	DefaultTplIDs []int64
+	BaseURL string
+	Client  *http.Client
+	AppID   string
+	AppKey  string
+	APIKey  string // Deprecated compatibility alias for AppKey.
 }
 
 func NewHTTPExternalPlatform(baseURL string, client *http.Client) *HTTPExternalPlatform {
@@ -1554,7 +1755,10 @@ func decodeExternalJSON(data []byte, output any) error {
 
 func (p *HTTPExternalPlatform) SendVerificationCode(ctx context.Context, input VerificationCodeRequest) (VerificationCodeDispatch, error) {
 	var result VerificationCodeDispatch
-	externalUserID := normalizeExternalUserID(input.ExternalUserID, input.UserID)
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
+	if !validUserID(externalUserID) {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_external_user_id", Message: "A valid externalUserId is required"}
+	}
 	payload := struct {
 		ExternalUserID string `json:"externalUserId"`
 		Phone          string `json:"phone"`
@@ -1565,7 +1769,10 @@ func (p *HTTPExternalPlatform) SendVerificationCode(ctx context.Context, input V
 
 func (p *HTTPExternalPlatform) BindUser(ctx context.Context, input BindUserRequest) (ExternalBindingResult, error) {
 	var result ExternalBindingResult
-	externalUserID := normalizeExternalUserID(input.ExternalUserID, input.UserID)
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
+	if !validUserID(externalUserID) {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_external_user_id", Message: "A valid externalUserId is required"}
+	}
 	code := input.SMSCode
 	if code == "" {
 		code = input.Code
@@ -1579,13 +1786,8 @@ func (p *HTTPExternalPlatform) BindUser(ctx context.Context, input BindUserReque
 		SMSCode        string `json:"smsCode"`
 	}{ExternalUserID: externalUserID, Phone: input.Phone, SMSCode: code}
 	err := p.request(ctx, http.MethodPost, "/openapi/user/bind", payload, &result)
-	if err == nil {
-		if result.ExternalUserID == "" {
-			result.ExternalUserID = externalUserID
-		}
-		if result.Bound {
-			result.Status = "bound"
-		}
+	if err == nil && result.Bound {
+		result.Status = "bound"
 	}
 	return result, err
 }
@@ -1598,10 +1800,41 @@ type ExternalBindingStatus struct {
 
 func (p *HTTPExternalPlatform) GetBindingStatus(ctx context.Context, externalUserID string) (ExternalBindingStatus, error) {
 	externalUserID = strings.TrimSpace(externalUserID)
+	if externalUserID == "" {
+		return ExternalBindingStatus{}, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_external_user_id", Message: "A valid externalUserId is required"}
+	}
 	query := url.Values{"externalUserId": []string{externalUserID}}
 	var result ExternalBindingStatus
 	err := p.request(ctx, http.MethodGet, "/openapi/user/bind/status?"+query.Encode(), nil, &result)
 	return result, err
+}
+
+func (p *HTTPExternalPlatform) ListWorks(ctx context.Context, page, pageSize int) (ExternalWorkPage, error) {
+	if page < 1 || pageSize < 1 || pageSize > 100 {
+		return ExternalWorkPage{}, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_work_query", Message: "Invalid work page or pageSize"}
+	}
+	query := url.Values{"pageNum": []string{strconv.Itoa(page)}, "pageSize": []string{strconv.Itoa(pageSize)}}
+	var payload struct {
+		List     []domain.ExternalWork `json:"list"`
+		Total    int                   `json:"total"`
+		PageNum  int                   `json:"pageNum"`
+		PageSize int                   `json:"pageSize"`
+	}
+	if err := p.request(ctx, http.MethodGet, "/openapi/works?"+query.Encode(), nil, &payload); err != nil {
+		return ExternalWorkPage{}, err
+	}
+	for index := range payload.List {
+		if err := normalizeExternalWork(&payload.List[index]); err != nil {
+			return ExternalWorkPage{}, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_work", Message: err.Error()}
+		}
+	}
+	if payload.PageNum < 1 {
+		payload.PageNum = page
+	}
+	if payload.PageSize < 1 {
+		payload.PageSize = pageSize
+	}
+	return ExternalWorkPage{Items: payload.List, Total: maxInt(payload.Total, len(payload.List)), Page: payload.PageNum, PageSize: payload.PageSize}, nil
 }
 
 func (p *HTTPExternalPlatform) ListTemplates(ctx context.Context, page, pageSize int, workID int64) (ExternalTemplatePage, error) {
@@ -1635,9 +1868,41 @@ func (p *HTTPExternalPlatform) ListTemplates(ctx context.Context, page, pageSize
 	return ExternalTemplatePage{Items: payload.List, Total: maxInt(payload.Total, len(payload.List)), Page: payload.PageNum, PageSize: payload.PageSize}, nil
 }
 
-func (p *HTTPExternalPlatform) ListAssetCounts(ctx context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalAssetHolding, error) {
+func normalizeExternalWork(work *domain.ExternalWork) error {
+	work.WorksName = strings.TrimSpace(work.WorksName)
+	work.WorksTypeName = strings.TrimSpace(work.WorksTypeName)
+	if work.WorkID <= 0 || work.WorksName == "" || work.PublishNum < 0 {
+		return errors.New("Haiwen returned an incomplete work")
+	}
+	for index := range work.Authors {
+		work.Authors[index].Name = strings.TrimSpace(work.Authors[index].Name)
+	}
+	for index := range work.Owners {
+		work.Owners[index].Name = strings.TrimSpace(work.Owners[index].Name)
+	}
+	for index, showcase := range work.Showcase {
+		showcase = strings.TrimSpace(showcase)
+		if showcase == "" {
+			work.Showcase[index] = ""
+			continue
+		}
+		parsed, err := url.Parse(showcase)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			work.Showcase[index] = ""
+			continue
+		}
+		work.Showcase[index] = showcase
+	}
+	return nil
+}
+
+func (p *HTTPExternalPlatform) ListAssetCounts(ctx context.Context, externalUserID string, tplIDs []int64) ([]domain.ExternalTemplateCount, error) {
 	if len(tplIDs) == 0 || len(tplIDs) > 100 {
 		return nil, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_tpl_ids", Message: "Provide between 1 and 100 template IDs"}
+	}
+	externalUserID = strings.TrimSpace(externalUserID)
+	if !validUserID(externalUserID) {
+		return nil, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_external_user_id", Message: "A valid externalUserId is required"}
 	}
 	values := make([]string, 0, len(tplIDs))
 	for _, tplID := range tplIDs {
@@ -1646,7 +1911,7 @@ func (p *HTTPExternalPlatform) ListAssetCounts(ctx context.Context, externalUser
 		}
 		values = append(values, strconv.FormatInt(tplID, 10))
 	}
-	query := url.Values{"externalUserId": []string{strings.TrimSpace(externalUserID)}, "tplIds": []string{strings.Join(values, ",")}}
+	query := url.Values{"externalUserId": []string{externalUserID}, "tplIds": []string{strings.Join(values, ",")}}
 	var payload struct {
 		ExternalUserID string `json:"externalUserId"`
 		List           []struct {
@@ -1657,12 +1922,15 @@ func (p *HTTPExternalPlatform) ListAssetCounts(ctx context.Context, externalUser
 	if err := p.request(ctx, http.MethodGet, "/openapi/user/assets/count?"+query.Encode(), nil, &payload); err != nil {
 		return nil, err
 	}
-	items := make([]domain.ExternalAssetHolding, 0, len(payload.List))
+	if strings.TrimSpace(payload.ExternalUserID) != "" && strings.TrimSpace(payload.ExternalUserID) != externalUserID {
+		return nil, &PlatformError{Status: http.StatusConflict, Code: "external_binding_mismatch", Message: "The external platform returned a different external user ID"}
+	}
+	items := make([]domain.ExternalTemplateCount, 0, len(payload.List))
 	for _, item := range payload.List {
 		if item.TplID <= 0 {
 			continue
 		}
-		items = append(items, domain.ExternalAssetHolding{AssetID: strconv.FormatInt(item.TplID, 10), Quantity: maxInt(item.Count, 0), Status: "available", SourceCode: "haiwen"})
+		items = append(items, domain.ExternalTemplateCount{TplID: item.TplID, Count: maxInt(item.Count, 0), SourceCode: "haiwen"})
 	}
 	return items, nil
 }
@@ -1693,33 +1961,36 @@ func normalizeExternalTemplate(template *domain.ExternalAssetTemplate) error {
 	return nil
 }
 
-func (p *HTTPExternalPlatform) ListAssets(ctx context.Context, userID string) ([]domain.ExternalAssetHolding, error) {
-	if len(p.DefaultTplIDs) == 0 {
-		return nil, &PlatformError{Status: http.StatusBadRequest, Code: "tpl_ids_required", Message: "Configure tplIds or call the template-count endpoint with tplIds"}
-	}
-	return p.ListAssetCounts(ctx, userID, p.DefaultTplIDs)
+func (p *HTTPExternalPlatform) SupportsItemizedAssets() bool { return false }
+
+func (p *HTTPExternalPlatform) RedeemAsset(_ context.Context, _ ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
+	return ExternalRedemptionResult{}, &PlatformError{Status: http.StatusNotImplemented, Code: "external_itemized_asset_unsupported", Message: "Haiwen supports template batch write-off only"}
 }
 
-func (p *HTTPExternalPlatform) RedeemAsset(ctx context.Context, input ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
+func (p *HTTPExternalPlatform) WriteOffTemplate(ctx context.Context, input ExternalTemplateWriteOffRequest) (ExternalRedemptionResult, error) {
 	var result ExternalRedemptionResult
+	externalUserID := strings.TrimSpace(input.ExternalUserID)
 	tplID := input.TplID
-	if tplID <= 0 {
-		tplID = parseTemplateID(input.AssetID)
-	}
 	requestNo := strings.TrimSpace(input.RequestNo)
-	if requestNo == "" {
-		requestNo = strings.TrimSpace(input.SerialNumber)
-	}
 	num := input.Num
-	if num == 0 {
-		num = 1
+	if !validUserID(externalUserID) {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_external_user_id", Message: "A valid externalUserId is required"}
+	}
+	if tplID <= 0 {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_tpl_id", Message: "A positive tplId is required"}
+	}
+	if num < 1 || num > 100 {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_num", Message: "num must be between 1 and 100"}
+	}
+	if !validRequestNo(requestNo) {
+		return result, &PlatformError{Status: http.StatusBadRequest, Code: "invalid_request_no", Message: "A valid requestNo is required"}
 	}
 	payload := struct {
 		RequestNo      string `json:"requestNo"`
 		ExternalUserID string `json:"externalUserId"`
 		TplID          int64  `json:"tplId"`
 		Num            int    `json:"num"`
-	}{RequestNo: requestNo, ExternalUserID: strings.TrimSpace(input.ExternalUserID), TplID: tplID, Num: num}
+	}{RequestNo: requestNo, ExternalUserID: externalUserID, TplID: tplID, Num: num}
 	if err := p.request(ctx, http.MethodPost, "/openapi/asset/write-off", payload, &result); err != nil {
 		return result, err
 	}
@@ -1727,7 +1998,7 @@ func (p *HTTPExternalPlatform) RedeemAsset(ctx context.Context, input ExternalRe
 		result.RequestNo = requestNo
 	}
 	if result.ExternalUserID == "" {
-		result.ExternalUserID = strings.TrimSpace(input.ExternalUserID)
+		result.ExternalUserID = externalUserID
 	}
 	if result.TplID == 0 {
 		result.TplID = tplID

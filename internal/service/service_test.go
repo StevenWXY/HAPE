@@ -31,6 +31,8 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","bound":true,"boundAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/assets/count"):
 			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","list":[{"tplId":100001,"count":3}]},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/works"):
+			body = `{"code":0,"message":"success","data":{"list":[{"workId":100001,"worksName":"作品名称","showcase":["https://cdn.example.com/work.png"],"authors":[{"id":1,"name":"作者"}],"owners":[],"worksType":1,"worksSubType":null,"worksTypeName":"影像","worksIntroduce":"<p>作品描述</p>","publishNum":10}],"total":1,"pageNum":1,"pageSize":20},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/tpls"):
 			body = `{"code":0,"message":"success","data":{"list":[{"tplId":100001,"name":"版权名称","description":"<p>版权描述</p>","image":"https://cdn.example.com/template.png","workId":100001,"worksName":"作品名称","worksType":1,"worksSubType":null,"worksTypeName":"影像","authors":[{"id":1,"name":"作者"}],"owners":[{"id":2,"name":"权利人"}],"publishCount":1000}],"total":1,"pageNum":1,"pageSize":20},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/write-off"):
@@ -52,15 +54,19 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 		t.Fatalf("binding=%#v err=%v", binding, err)
 	}
 	assets, err := platform.ListAssetCounts(context.Background(), "external-1", []int64{100001})
-	if err != nil || len(assets) != 1 || assets[0].AssetID != "100001" || assets[0].Quantity != 3 {
+	if err != nil || len(assets) != 1 || assets[0].TplID != 100001 || assets[0].Count != 3 {
 		t.Fatalf("assets=%#v err=%v", assets, err)
 	}
 	templates, err := platform.ListTemplates(context.Background(), 1, 20, 0)
 	if err != nil || len(templates.Items) != 1 || templates.Items[0].TplID != 100001 || templates.Items[0].Owners[0].Name != "权利人" {
 		t.Fatalf("templates=%#v err=%v", templates, err)
 	}
-	redeemed, err := platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-1"})
-	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 5 {
+	works, err := platform.ListWorks(context.Background(), 1, 20)
+	if err != nil || len(works.Items) != 1 || works.Items[0].WorkID != 100001 || works.Items[0].PublishNum != 10 {
+		t.Fatalf("works=%#v err=%v", works, err)
+	}
+	redeemed, err := platform.WriteOffTemplate(context.Background(), ExternalTemplateWriteOffRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-1"})
+	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 6 {
 		t.Fatalf("redeemed=%#v requests=%d err=%v", redeemed, len(requests), err)
 	}
 	if requests[0].Header.Get("x-app-id") != "100001" || requests[0].Header.Get("x-app-key") != "secret" {
@@ -87,13 +93,21 @@ func (f *migrationFake) BindUser(context.Context, BindUserRequest) (ExternalBind
 func (f *migrationFake) ListAssets(context.Context, string) ([]domain.ExternalAssetHolding, error) {
 	return []domain.ExternalAssetHolding{{AssetID: "100053", Quantity: f.count}}, nil
 }
-func (f *migrationFake) ListAssetCounts(context.Context, string, []int64) ([]domain.ExternalAssetHolding, error) {
-	return []domain.ExternalAssetHolding{{AssetID: "100053", Quantity: f.count}}, nil
+func (f *migrationFake) ListAssetCounts(context.Context, string, []int64) ([]domain.ExternalTemplateCount, error) {
+	return []domain.ExternalTemplateCount{{TplID: 100053, Count: f.count}}, nil
 }
 func (f *migrationFake) ListTemplates(context.Context, int, int, int64) (ExternalTemplatePage, error) {
 	return ExternalTemplatePage{Items: []domain.ExternalAssetTemplate{f.template}, Total: 1, Page: 1, PageSize: 20}, nil
 }
 func (f *migrationFake) RedeemAsset(_ context.Context, input ExternalRedemptionRequest) (ExternalRedemptionResult, error) {
+	f.redeems++
+	if f.err != nil {
+		return ExternalRedemptionResult{}, f.err
+	}
+	return ExternalRedemptionResult{ExternalTxID: "haiwen-write-off-1", Status: "SUCCESS", TplID: input.TplID, Num: input.Num, Quantity: input.Num, RequestNo: input.RequestNo}, nil
+}
+
+func (f *migrationFake) WriteOffTemplate(_ context.Context, input ExternalTemplateWriteOffRequest) (ExternalRedemptionResult, error) {
 	f.redeems++
 	if f.err != nil {
 		return ExternalRedemptionResult{}, f.err
@@ -195,10 +209,28 @@ func TestHTTPExternalPlatformMapsHaiwenBusinessErrors(t *testing.T) {
 	})}
 	platform := NewHTTPExternalPlatform("https://partner.example/api", client)
 	platform.AppID, platform.AppKey = "100001", "secret"
-	_, err := platform.RedeemAsset(context.Background(), ExternalRedemptionRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-2"})
+	_, err := platform.WriteOffTemplate(context.Background(), ExternalTemplateWriteOffRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-2"})
 	var platformErr *PlatformError
 	if !errors.As(err, &platformErr) || platformErr.Status != http.StatusUnprocessableEntity || platformErr.Code != "external_assets_insufficient" {
 		t.Fatalf("error=%#v", err)
+	}
+}
+
+func TestHTTPExternalPlatformDoesNotInferExternalUserID(t *testing.T) {
+	calls := 0
+	client := &http.Client{Transport: integrationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{}}`)), Header: make(http.Header), Request: request}, nil
+	})}
+	platform := NewHTTPExternalPlatform("https://partner.example/api", client)
+	platform.AppID, platform.AppKey = "100001", "secret"
+	_, err := platform.SendVerificationCode(context.Background(), VerificationCodeRequest{UserID: "clip-user-1", Phone: "13800138000"})
+	var platformErr *PlatformError
+	if !errors.As(err, &platformErr) || platformErr.Code != "invalid_external_user_id" {
+		t.Fatalf("missing external id error=%#v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("adapter made %d network calls for invalid input", calls)
 	}
 }
 
@@ -216,7 +248,15 @@ func (f *integrationFake) BindUser(_ context.Context, input BindUserRequest) (Ex
 	if input.Code != "654321" {
 		return ExternalBindingResult{}, &PlatformError{Status: 400, Code: "verification_code_invalid", Message: "bad code"}
 	}
-	return ExternalBindingResult{ExternalUserID: "partner-user-1", BindingID: "partner-binding-1", Status: "bound"}, nil
+	externalID := "partner-user-1"
+	if input.UserID == "clip-user-2" {
+		externalID = "partner-user-2"
+	}
+	return ExternalBindingResult{ExternalUserID: externalID, BindingID: "partner-binding-" + externalID, Status: "bound", Bound: true, BoundAt: "2026-08-26T10:00:00Z"}, nil
+}
+
+func (f *integrationFake) GetBindingStatus(_ context.Context, externalUserID string) (ExternalBindingStatus, error) {
+	return ExternalBindingStatus{ExternalUserID: externalUserID, Bound: true, BoundAt: "2026-08-26T10:00:00Z"}, nil
 }
 
 func (f *integrationFake) ListAssets(context.Context, string) ([]domain.ExternalAssetHolding, error) {
@@ -232,21 +272,21 @@ func (f *integrationFake) RedeemAsset(context.Context, ExternalRedemptionRequest
 func TestExternalPlatformIntegrationFlow(t *testing.T) {
 	fake := &integrationFake{}
 	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), fake)
-	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", Phone: "138-0013-8000", RequestID: "verify-clip-user-1"})
+	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Phone: "138-0013-8000", RequestID: "verify-clip-user-1"})
 	if err != nil || sent.Challenge.ID == "" || sent.Challenge.Phone != "13800138000" || sent.Challenge.PhoneMasked != "*******8000" {
 		t.Fatalf("send result=%#v err=%v", sent, err)
 	}
-	binding, idempotent, err := svc.BindUser(BindUserInput{UserID: "clip-user-1", Phone: "13800138000", Code: "654321", VerificationID: sent.Challenge.ID, RequestID: "bind-clip-user-1"})
+	binding, idempotent, err := svc.BindUser(BindUserInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Phone: "13800138000", Code: "654321", VerificationID: sent.Challenge.ID, RequestID: "bind-clip-user-1"})
 	if err != nil || idempotent || binding.Binding.ExternalUserID != "partner-user-1" {
 		t.Fatalf("bind result=%#v idempotent=%v err=%v", binding, idempotent, err)
 	}
 	// The second step may submit only the code; the phone is recovered from
 	// the pending verification challenge.
-	secondSent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-2", Phone: "13900139000"})
+	secondSent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-2", ExternalUserID: "partner-user-2", Phone: "13900139000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.BindUser(BindUserInput{UserID: "clip-user-2", Code: "654321", VerificationID: secondSent.Challenge.ID}); err != nil {
+	if _, _, err := svc.BindUser(BindUserInput{UserID: "clip-user-2", ExternalUserID: "partner-user-2", Code: "654321", VerificationID: secondSent.Challenge.ID}); err != nil {
 		t.Fatalf("bind without phone: %v", err)
 	}
 	holdings, err := svc.UserAssets("clip-user-1")
@@ -263,6 +303,43 @@ func TestExternalPlatformIntegrationFlow(t *testing.T) {
 	}
 	if _, _, err := svc.RedeemExternalAsset(RedeemExternalAssetInput{UserID: "clip-user-1", AssetID: "other-asset", SerialNumber: "serial-0001"}); err == nil {
 		t.Fatal("expected serial reuse conflict")
+	}
+}
+
+func TestVerificationChallengesAreScopedToExternalUser(t *testing.T) {
+	fake := &integrationFake{}
+	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), fake)
+	first, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Phone: "13800138000", RequestID: "verify-shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", ExternalUserID: "partner-user-2", Phone: "13800138000", RequestID: "verify-shared"}); apiErrorCode(err) != "request_id_reused" {
+		t.Fatalf("request id reused across external users: %v", err)
+	}
+	if _, _, err := svc.BindUser(BindUserInput{UserID: "clip-user-1", ExternalUserID: "partner-user-2", Code: "654321"}); apiErrorCode(err) != "verification_required" {
+		t.Fatalf("cross-user challenge was selected: %v", err)
+	}
+	if _, _, err := svc.BindUser(BindUserInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Code: "654321", VerificationID: first.Challenge.ID}); err != nil {
+		t.Fatalf("matching challenge failed: %v", err)
+	}
+}
+
+func TestDemoExternalPlatformHonorsExplicitExternalUserID(t *testing.T) {
+	platform := NewDemoExternalPlatform()
+	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), platform)
+	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-demo", ExternalUserID: "haiwen-100001", Phone: "13800138000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := svc.BindUser(BindUserInput{UserID: "clip-demo", ExternalUserID: "haiwen-100001", Code: "123456", VerificationID: sent.Challenge.ID})
+	if err != nil {
+		t.Fatalf("demo binding failed: %v", err)
+	}
+	if result.Binding.ExternalUserID != "haiwen-100001" {
+		t.Fatalf("external user id=%q", result.Binding.ExternalUserID)
+	}
+	if _, _, err := svc.GetBinding("clip-demo"); err != nil {
+		t.Fatalf("binding status read failed: %v", err)
 	}
 }
 

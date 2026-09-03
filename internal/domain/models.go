@@ -353,17 +353,19 @@ type Profile struct {
 // Clipli user. The code itself is never stored by Clipli; the external
 // platform remains responsible for delivery and validation.
 type VerificationChallenge struct {
-	ID             string `json:"id"`
-	UserID         string `json:"userId"`
-	ExternalUserID string `json:"externalUserId,omitempty"`
-	Phone          string `json:"-"`
-	PhoneMasked    string `json:"phoneMasked"`
-	DeliveryID     string `json:"deliveryId,omitempty"`
-	Status         string `json:"status"`
-	ExpiresAt      string `json:"expiresAt"`
-	CreatedAt      string `json:"createdAt"`
-	ConsumedAt     string `json:"consumedAt,omitempty"`
-	RequestID      string `json:"requestId,omitempty"`
+	ID               string `json:"id"`
+	UserID           string `json:"userId"`
+	ExternalUserID   string `json:"externalUserId,omitempty"`
+	Phone            string `json:"-"`
+	PhoneMasked      string `json:"phoneMasked"`
+	DeliveryID       string `json:"deliveryId,omitempty"`
+	DeliveryIDSource string `json:"deliveryIdSource,omitempty"`
+	Status           string `json:"status"`
+	ExpiresAt        string `json:"expiresAt"`
+	ExpiresAtSource  string `json:"expiresAtSource"`
+	CreatedAt        string `json:"createdAt"`
+	ConsumedAt       string `json:"consumedAt,omitempty"`
+	RequestID        string `json:"requestId,omitempty"`
 }
 
 // ExternalPlatformBinding links a Clipli user to the corresponding user at
@@ -394,6 +396,15 @@ type ExternalAssetHolding struct {
 	ExternalAssetID string `json:"externalAssetId,omitempty"`
 }
 
+// ExternalTemplateCount is the narrow contract returned by Haiwen's
+// /openapi/user/assets/count endpoint. It is not an asset, balance, serial
+// number, inventory record, or transfer identifier.
+type ExternalTemplateCount struct {
+	TplID      int64  `json:"tplId"`
+	Count      int    `json:"count"`
+	SourceCode string `json:"sourceCode,omitempty"`
+}
+
 // ExternalParty is the minimal author/rights-owner identity exposed by the
 // Haiwen template catalog. It intentionally excludes private contact data.
 type ExternalParty struct {
@@ -417,6 +428,22 @@ type ExternalAssetTemplate struct {
 	Authors       []ExternalParty `json:"authors"`
 	Owners        []ExternalParty `json:"owners"`
 	PublishCount  int             `json:"publishCount"`
+}
+
+// ExternalWork is an immutable snapshot of Haiwen /openapi/works metadata.
+// publishNum is an issuance statistic, never a user balance or available
+// migration quantity.
+type ExternalWork struct {
+	WorkID         int64           `json:"workId"`
+	WorksName      string          `json:"worksName"`
+	Showcase       []string        `json:"showcase"`
+	Authors        []ExternalParty `json:"authors"`
+	Owners         []ExternalParty `json:"owners"`
+	WorksType      *int64          `json:"worksType"`
+	WorksSubType   *int64          `json:"worksSubType"`
+	WorksTypeName  string          `json:"worksTypeName"`
+	WorksIntroduce string          `json:"worksIntroduce"`
+	PublishNum     int             `json:"publishNum"`
 }
 
 // ExternalAssetMappingRule supplies only the Clipli-owned economic fields
@@ -461,13 +488,14 @@ type ExternalAssetRedemption struct {
 	ID             string `json:"id"`
 	UserID         string `json:"userId"`
 	ExternalUserID string `json:"externalUserId"`
-	AssetID        string `json:"assetId"`
-	SerialNumber   string `json:"serialNumber"`
+	AssetID        string `json:"assetId,omitempty"`
+	SerialNumber   string `json:"serialNumber,omitempty"`
 	RequestNo      string `json:"requestNo,omitempty"`
 	TplID          int64  `json:"tplId,omitempty"`
 	Num            int    `json:"num,omitempty"`
 	ExternalTxID   string `json:"externalTxId,omitempty"`
 	Quantity       int    `json:"quantity"`
+	Mode           string `json:"mode"`
 	Status         string `json:"status"`
 	RequestID      string `json:"requestId,omitempty"`
 	RedeemedAt     string `json:"redeemedAt"`

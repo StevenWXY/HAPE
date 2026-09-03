@@ -722,6 +722,27 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '502': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /api/v1/integrations/platform/works:
+    get:
+      tags: [Integrations]
+      summary: Read the Haiwen published-work catalog
+      operationId: listHaiwenWorks
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Haiwen works with issuance statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalWorkListEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api/v1/integrations/platform/users/{userId}/migrations/preview:
     parameters:
       - name: userId
@@ -1033,19 +1054,27 @@ paths:
   /api/v1/integrations/platform/bindings:
     get:
       tags: [Integrations]
-      summary: Get the current external-platform binding for a Clipli user
+      summary: Get an external binding by Clipli user ID or verify Haiwen status by external user ID
       operationId: getExternalPlatformBinding
       parameters:
         - name: userId
           in: query
-          required: true
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: externalUserId
+          in: query
+          required: false
+          description: When userId is omitted, directly reads Haiwen /openapi/user/bind/status.
           schema: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '200':
           description: Current user binding
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BindingEnvelope' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/BindingEnvelope'
+                  - $ref: '#/components/schemas/ExternalBindingStatusEnvelope'
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
     post:
@@ -1080,7 +1109,7 @@ paths:
         schema: { type: string, minLength: 1, maxLength: 128 }
     get:
       tags: [Integrations]
-      summary: Query assets or template counts held by a bound Clipli user
+      summary: Query template counts or itemized assets for a bound Clipli user
       operationId: listExternalPlatformUserAssets
       parameters:
         - name: tplIds
@@ -1090,7 +1119,7 @@ paths:
           schema: { type: string, pattern: '^[1-9][0-9]*(,[1-9][0-9]*){0,99}$' }
       responses:
         '200':
-          description: External platform asset holdings
+          description: Itemized holdings only for adapters that support them; Haiwen requests with tplIds return narrow redeemable template counts.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserAssetsEnvelope' }
@@ -1135,7 +1164,7 @@ paths:
         schema: { type: string, minLength: 1, maxLength: 200 }
     post:
       tags: [Integrations]
-      summary: Redeem an external asset with a unique serial number
+      summary: Redeem an itemized external asset for providers that expose asset IDs
       operationId: redeemExternalPlatformAsset
       requestBody:
         required: true
@@ -2069,7 +2098,7 @@ components:
     VerificationCodeRequest:
       type: object
       additionalProperties: false
-      required: [userId, phone]
+      required: [userId, externalUserId, phone]
       properties:
         userId: { type: string, minLength: 1, maxLength: 128 }
         clipliUserId: { type: string, minLength: 1, maxLength: 128, description: Compatibility alias for userId }
@@ -2087,8 +2116,10 @@ components:
         userId: { type: string }
         phoneMasked: { type: string }
         deliveryId: { type: string }
+        deliveryIdSource: { type: string, enum: [adapter-reported] }
         status: { type: string, enum: [sent, consumed, expired] }
         expiresAt: { type: string, format: date-time }
+        expiresAtSource: { type: string, enum: [adapter-reported, clipli-local] }
         createdAt: { type: string, format: date-time }
         requestId: { type: string }
 
@@ -2110,7 +2141,7 @@ components:
     BindingRequest:
       type: object
       additionalProperties: false
-      required: [userId, code]
+      required: [userId, externalUserId, code]
       properties:
         userId: { type: string, minLength: 1, maxLength: 128 }
         clipliUserId: { type: string, minLength: 1, maxLength: 128, description: Compatibility alias for userId }
@@ -2150,8 +2181,23 @@ components:
             externalUserId: { type: string }
             status: { type: string }
 
+    ExternalBindingStatus:
+      type: object
+      required: [externalUserId, bound]
+      properties:
+        externalUserId: { type: string }
+        bound: { type: boolean }
+        boundAt: { type: string, format: date-time, nullable: true }
+
+    ExternalBindingStatusEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ExternalBindingStatus' }
+
     ExternalAssetHolding:
       type: object
+      description: Itemized holding contract for providers that expose asset IDs. Haiwen does not implement this contract.
       required: [assetId, quantity]
       properties:
         assetId: { type: string }
@@ -2185,6 +2231,36 @@ components:
         authors: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
         owners: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
         publishCount: { type: integer, minimum: 0 }
+
+    ExternalWork:
+      type: object
+      required: [workId, worksName, showcase, authors, owners, worksIntroduce, publishNum]
+      properties:
+        workId: { type: integer, format: int64, minimum: 1 }
+        worksName: { type: string }
+        showcase: { type: array, items: { type: string, format: uri } }
+        authors: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
+        owners: { type: array, items: { $ref: '#/components/schemas/ExternalParty' } }
+        worksType: { type: integer, format: int64, nullable: true }
+        worksSubType: { type: integer, format: int64, nullable: true }
+        worksTypeName: { type: string }
+        worksIntroduce: { type: string, description: Source HTML/text snapshot; clients must escape before rendering }
+        publishNum: { type: integer, minimum: 0, description: Issuance statistic, not inventory or user balance }
+
+    ExternalWorkListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, total, page, pageSize, retrievedAt, sourceOfTruth]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/ExternalWork' } }
+            total: { type: integer, minimum: 0 }
+            page: { type: integer, minimum: 1 }
+            pageSize: { type: integer, minimum: 1 }
+            retrievedAt: { type: string, format: date-time }
+            sourceOfTruth: { type: string, const: haiwen-/openapi/works }
 
     ExternalAssetMappingRule:
       type: object
@@ -2298,6 +2374,7 @@ components:
 
     ExternalAssetCount:
       type: object
+      description: Narrow Haiwen template-count result; count is current redeemable quantity only.
       required: [tplId, count]
       properties:
         tplId: { type: integer, format: int64, minimum: 1 }
@@ -2317,7 +2394,7 @@ components:
               type: array
               items: { $ref: '#/components/schemas/ExternalAssetCount' }
             retrievedAt: { type: string, format: date-time }
-            sourceOfTruth: { type: string, const: external-platform }
+            sourceOfTruth: { type: string, const: haiwen-/openapi/user/assets/count }
 
     UserAssetsEnvelope:
       type: object
@@ -2339,6 +2416,7 @@ components:
 
     ExternalRedemptionRequest:
       type: object
+      description: Itemized-provider compatibility contract only. Haiwen must use the migration endpoint or template batch write-off; it does not expose assetId or serialNumber.
       additionalProperties: false
       properties:
         userId: { type: string, minLength: 1, maxLength: 128, description: Optional when supplied in the path }
@@ -2353,7 +2431,7 @@ components:
 
     ExternalAssetRedemption:
       type: object
-      required: [id, userId, externalUserId, assetId, serialNumber, quantity, status, redeemedAt]
+      required: [id, userId, externalUserId, quantity, mode, status, redeemedAt]
       properties:
         id: { type: string }
         userId: { type: string }
@@ -2365,6 +2443,7 @@ components:
         num: { type: integer, minimum: 1, maximum: 100 }
         externalTxId: { type: string }
         quantity: { type: integer, minimum: 1 }
+        mode: { type: string, enum: [itemized_asset, template_batch_write_off] }
         status: { type: string, enum: [completed] }
         requestId: { type: string }
         redeemedAt: { type: string, format: date-time }

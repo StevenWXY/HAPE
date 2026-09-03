@@ -347,7 +347,7 @@ func TestBNBAdminSimulation(t *testing.T) {
 func TestExternalPlatformBindingAndRedemptionRoutes(t *testing.T) {
 	handler := testHandler(t)
 	status, data := doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/verification-codes", map[string]any{
-		"userId": "clip-user-http", "phone": "13800138000",
+		"userId": "clip-user-http", "externalUserId": "demo-user-clip-user-http", "phone": "13800138000",
 	})
 	if status != http.StatusAccepted || !bytes.Contains(data, []byte(`"verificationId"`)) || bytes.Contains(data, []byte(`"code"`)) {
 		t.Fatalf("verification status=%d body=%s", status, data)
@@ -361,7 +361,7 @@ func TestExternalPlatformBindingAndRedemptionRoutes(t *testing.T) {
 		t.Fatalf("verification payload=%s", data)
 	}
 	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/bindings", map[string]any{
-		"userId": "clip-user-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID,
+		"userId": "clip-user-http", "externalUserId": "demo-user-clip-user-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID,
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("binding status=%d", status)
@@ -401,11 +401,15 @@ func TestHaiwenTemplateAndMigrationRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := testHandlerWithService(t, serviceLayer)
-	status, data := doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/templates?page=1&pageSize=20", nil)
+	status, data := doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/works?page=1&pageSize=20", nil)
+	if status != http.StatusOK || !bytes.Contains(data, []byte(`"workId":100001`)) || !bytes.Contains(data, []byte(`"publishNum":100`)) {
+		t.Fatalf("works status=%d body=%s", status, data)
+	}
+	status, data = doJSONRequest(t, handler, http.MethodGet, "/api/v1/integrations/platform/templates?page=1&pageSize=20", nil)
 	if status != http.StatusOK || !bytes.Contains(data, []byte(`"tplId":100001`)) || !bytes.Contains(data, []byte(`"migrationReady":true`)) {
 		t.Fatalf("templates status=%d body=%s", status, data)
 	}
-	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/verification-codes", map[string]any{"userId": "clip-migration-http", "phone": "13800138000"})
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/verification-codes", map[string]any{"userId": "clip-migration-http", "externalUserId": "demo-user-clip-migration-http", "phone": "13800138000"})
 	if status != http.StatusAccepted {
 		t.Fatalf("verification status=%d body=%s", status, data)
 	}
@@ -417,7 +421,7 @@ func TestHaiwenTemplateAndMigrationRoutes(t *testing.T) {
 	if err := json.Unmarshal(data, &challenge); err != nil {
 		t.Fatal(err)
 	}
-	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/bindings", map[string]any{"userId": "clip-migration-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID})
+	status, data = doJSONRequest(t, handler, http.MethodPost, "/api/v1/integrations/platform/bindings", map[string]any{"userId": "clip-migration-http", "externalUserId": "demo-user-clip-migration-http", "phone": "13800138000", "code": "123456", "verificationId": challenge.Challenge.ID})
 	if status != http.StatusCreated {
 		t.Fatalf("binding status=%d body=%s", status, data)
 	}
