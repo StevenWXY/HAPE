@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"github.com/StevenWXY/HAPE/internal/testfixture"
 	"io"
 	"net/http"
 	"strings"
@@ -27,6 +28,8 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 		switch {
 		case strings.HasSuffix(request.URL.Path, "/bind/sms"):
 			body = `{"code":0,"message":"success","data":{},"msg":"success"}`
+		case strings.HasSuffix(request.URL.Path, "/bind/status"):
+			body = `{"code":0,"data":{"externalUserId":"external-1","bound":true,"boundAt":"2026-08-26T10:00:00+08:00"}}`
 		case strings.HasSuffix(request.URL.Path, "/bind"):
 			body = `{"code":0,"message":"success","data":{"externalUserId":"external-1","bound":true,"boundAt":"2026-08-26T10:00:00+08:00"},"msg":"success"}`
 		case strings.HasSuffix(request.URL.Path, "/assets/count"):
@@ -65,8 +68,12 @@ func TestHTTPExternalPlatformAcceptsDataEnvelope(t *testing.T) {
 	if err != nil || len(works.Items) != 1 || works.Items[0].WorkID != 100001 || works.Items[0].PublishNum != 10 {
 		t.Fatalf("works=%#v err=%v", works, err)
 	}
+	status, err := platform.GetBindingStatus(context.Background(), "external-1")
+	if err != nil || !status.Bound || status.ExternalUserID != "external-1" {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
 	redeemed, err := platform.WriteOffTemplate(context.Background(), ExternalTemplateWriteOffRequest{ExternalUserID: "external-1", TplID: 100001, Num: 1, RequestNo: "wo-1"})
-	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 6 {
+	if err != nil || redeemed.RequestNo != "wo-1" || redeemed.TplID != 100001 || redeemed.Num != 1 || len(requests) != 7 {
 		t.Fatalf("redeemed=%#v requests=%d err=%v", redeemed, len(requests), err)
 	}
 	if requests[0].Header.Get("x-app-id") != "100001" || requests[0].Header.Get("x-app-key") != "secret" {
@@ -122,7 +129,7 @@ func TestHaiwenTemplateMigrationCreatesMatchingClipliAssetBeforeLocalRedemption(
 		WorkID: 100002, WorksName: "海直播百部短剧", WorksType: &workType,
 		Authors: []domain.ExternalParty{{ID: 100001, Name: "海直播传媒(海南)有限公司"}}, Owners: []domain.ExternalParty{{ID: 100000, Name: "海直播传媒(海南)有限公司"}}, PublishCount: 10000,
 	}}
-	state := store.SeedState()
+	state := testfixture.SeedState()
 	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
 	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
 	svc.now = func() time.Time { return time.Date(2026, 9, 4, 8, 30, 0, 0, time.UTC) }
@@ -161,7 +168,7 @@ func TestHaiwenTemplateMigrationCreatesMatchingClipliAssetBeforeLocalRedemption(
 
 func TestHaiwenMigrationRequiresExplicitMappingAndKeepsFailedAssetInactive(t *testing.T) {
 	fake := &migrationFake{count: 1, template: domain.ExternalAssetTemplate{TplID: 100053, Name: "测试222", WorkID: 100002, WorksName: "海直播百部短剧", Owners: []domain.ExternalParty{{ID: 1, Name: "权利人"}}, PublishCount: 10000}}
-	state := store.SeedState()
+	state := testfixture.SeedState()
 	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
 	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
 	input := MigrateExternalAssetInput{UserID: "clip-user-migration", TplID: 100053, Num: 1, RequestNo: "HW-MIGRATION-100053-FAIL", RequestID: "migration-100053-fail", Accepted: true}
@@ -179,7 +186,10 @@ func TestHaiwenMigrationRequiresExplicitMappingAndKeepsFailedAssetInactive(t *te
 	if len(migrations) != 1 || migrations[0].Status != "external_write_off_failed" {
 		t.Fatalf("migrations=%#v", migrations)
 	}
-	asset, ok := svc.GetAsset(migrations[0].ClipliAssetIDs[0])
+	if _, visible := svc.GetAsset(migrations[0].ClipliAssetIDs[0]); visible {
+		t.Fatal("failed migration must not be visible in portfolio")
+	}
+	asset, ok := findAsset(svc.Snapshot().Assets, migrations[0].ClipliAssetIDs[0])
 	if !ok || asset.Transferable || asset.RedemptionStatus != "external_write_off_failed" {
 		t.Fatalf("failed staged asset=%#v", asset)
 	}
@@ -187,7 +197,7 @@ func TestHaiwenMigrationRequiresExplicitMappingAndKeepsFailedAssetInactive(t *te
 
 func TestHaiwenMigrationChecksClipTreasuryBeforeWriteOff(t *testing.T) {
 	fake := &migrationFake{count: 1, template: domain.ExternalAssetTemplate{TplID: 100053, Name: "测试222", WorkID: 100002, WorksName: "海直播百部短剧", Owners: []domain.ExternalParty{{ID: 1, Name: "权利人"}}, PublishCount: 10000}}
-	state := store.SeedState()
+	state := testfixture.SeedState()
 	state.Bindings = []domain.ExternalPlatformBinding{{ID: "binding-migration", UserID: "clip-user-migration", ExternalUserID: "100001", PlatformCode: "haiwen", Status: "bound"}}
 	state.CLIPTreasury.TreasuryBalance = 0
 	svc := NewWithExternalPlatform(store.NewMemory(state), fake)
@@ -271,7 +281,7 @@ func (f *integrationFake) RedeemAsset(context.Context, ExternalRedemptionRequest
 
 func TestExternalPlatformIntegrationFlow(t *testing.T) {
 	fake := &integrationFake{}
-	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), fake)
+	svc := NewWithExternalPlatform(store.NewMemory(testfixture.SeedState()), fake)
 	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Phone: "138-0013-8000", RequestID: "verify-clip-user-1"})
 	if err != nil || sent.Challenge.ID == "" || sent.Challenge.Phone != "13800138000" || sent.Challenge.PhoneMasked != "*******8000" {
 		t.Fatalf("send result=%#v err=%v", sent, err)
@@ -308,7 +318,7 @@ func TestExternalPlatformIntegrationFlow(t *testing.T) {
 
 func TestVerificationChallengesAreScopedToExternalUser(t *testing.T) {
 	fake := &integrationFake{}
-	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), fake)
+	svc := NewWithExternalPlatform(store.NewMemory(testfixture.SeedState()), fake)
 	first, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-user-1", ExternalUserID: "partner-user-1", Phone: "13800138000", RequestID: "verify-shared"})
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +336,7 @@ func TestVerificationChallengesAreScopedToExternalUser(t *testing.T) {
 
 func TestDemoExternalPlatformHonorsExplicitExternalUserID(t *testing.T) {
 	platform := NewDemoExternalPlatform()
-	svc := NewWithExternalPlatform(store.NewMemory(store.SeedState()), platform)
+	svc := NewWithExternalPlatform(store.NewMemory(testfixture.SeedState()), platform)
 	sent, err := svc.SendVerificationCode(SendVerificationInput{UserID: "clip-demo", ExternalUserID: "haiwen-100001", Phone: "13800138000"})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +354,7 @@ func TestDemoExternalPlatformHonorsExplicitExternalUserID(t *testing.T) {
 }
 
 func newTestService() *Service {
-	service := New(store.NewMemory(store.SeedState()))
+	service := New(store.NewMemory(testfixture.SeedState()))
 	service.now = func() time.Time { return time.Date(2026, 8, 17, 8, 30, 0, 123, time.UTC) }
 	return service
 }
@@ -400,7 +410,7 @@ func TestGenerateConsumesMatchingBalances(t *testing.T) {
 
 func TestAllSeedAssetsHaveExternalReferences(t *testing.T) {
 	for _, asset := range newTestService().Snapshot().Assets {
-		if asset.External.ProviderCode == "" || asset.External.ProviderAssetID == "" || asset.External.SyncStatus != "synced" {
+		if asset.External.ProviderCode == "" || asset.External.ProviderAssetID == "" || asset.External.SyncStatus != "migrated" || asset.External.TransferID == "" {
 			t.Fatalf("asset lacks external provenance: %#v", asset)
 		}
 	}
@@ -559,4 +569,18 @@ func apiErrorCode(err error) string {
 		return target.Code
 	}
 	return ""
+}
+
+func TestSandboxCannotCreateRealTransferredAssets(t *testing.T) {
+	svc := NewWithExternalPlatform(store.NewMemory(store.InitialState()), NewHTTPExternalPlatform("https://api-test.hnccc.com/api", nil))
+	if !svc.ExternalPlatformSandbox() {
+		t.Fatal("Haiwen test host must be marked sandbox")
+	}
+	_, _, err := svc.MigrateExternalAsset(MigrateExternalAssetInput{})
+	if apiErrorCode(err) != "external_sandbox_transfer_disabled" {
+		t.Fatalf("error=%v", err)
+	}
+	if len(svc.Snapshot().Assets) != 0 || len(svc.Snapshot().ExternalMigrations) != 0 {
+		t.Fatal("sandbox must not create assets or call write-off")
+	}
 }

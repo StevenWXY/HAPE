@@ -7,17 +7,19 @@ Clipli 是以 HAPW 授权证书为核心的 AI 视频创作与资产行权原型
 - Go 1.22+，仅使用标准库 `net/http`，无第三方运行依赖。
 - `cmd/server`：进程入口、超时与优雅停机。
 - `internal/domain`：HAPW、外部资产引用、授权、核销、行权、兑换、CLIP 金库与生成任务模型。
-- `internal/store`：线程安全内存仓储和演示数据。
+- `internal/store`：单进程持久化账本、事务回滚及文件排他锁；首次启动资产和余额为空，重启恢复已有真实记录。
 - `internal/service`：额度、CLIP、核销、生成、行权、兑换和外部平台绑定规则；外部平台能力通过可替换适配器接入。
 - `internal/httpapi`：REST API、兼容路由、安全响应头和静态文件服务。
 - `api/openapi.yaml`：OpenAPI 3.1 接口规范。
 - `docs/API.md`：面向产品与前端的中文接口总览。
 
-当前仓储为进程内演示状态，重启后复位。原型不做真实身份验证或 KYC，钱包连接仅登记 EIP-1193 返回的地址与网络。钱包资产由外部资产平台快照提供；HAPW 核销后会为已连接钱包创建 CLIP 空投任务。真实链上发放由外部执行器完成，平台服务不接收私钥、不在浏览器签名。正式环境应把 `internal/store` 替换为 PostgreSQL，并把平台审计、钱包签名和外部平台凭据放在服务端边界内。
+账本默认保存到 `.data/clipli-state.json`，可通过 `CLIPLI_STATE_FILE` 指定持久化路径。原型仍是单账户本地会话，尚未实现多用户登录鉴权和钱包签名证明，不应直接开放到公网处理真实客户资产。规模化部署需要数据库事务、多用户账本和鉴权。真实空投由 `scripts/execute-airdrop.js` 独立签名执行，API 服务只读取 BNB RPC 并核验回执，不接收私钥。
 
-作品和 HAPW 默认使用各外部平台的演示快照。部署时可设置 `WORK_SOURCE_URL` 接入作品 API，设置 `HAPW_ASSET_SOURCE_URL` 接入规范化 HAPW 资产 API；请求超时、状态码异常、字段不完整或返回为空时保留最后一次有效快照，并在同步记录中登记原因。
+海文发七项接口、兑换审批和空投实现的逐项核对、验证范围及正式配置见 [海文发集成核对报告](docs/HAIWEN_INTEGRATION_AUDIT.md)。
 
-外部平台手机号绑定和资产核销已提供联调框架：`POST /api/v1/integrations/platform/verification-codes` 发送验证码、`POST /api/v1/integrations/platform/bindings` 提交绑定、`GET /api/v1/integrations/platform/users/{userId}/assets?tplIds=100001,100002` 查询模板当前可核销数量、`POST /api/v1/integrations/platform/users/{userId}/migrations` 按模板数量核销并创建 Clipli 镜像。未配置 `CLIPLI_EXTERNAL_PLATFORM_URL` 时使用仅供演示的内存适配器；配置后由服务端按海文发协议调用作品、模板、绑定、计数和批量核销接口，认证头为 `x-app-id/x-app-key`。
+作品和资产默认均为空。`WORK_SOURCE_URL` 可接入真实作品；`HAPW_ASSET_SOURCE_URL` 仅接收可信平台确认的划转资产，必须包含来源平台、外部资产 ID、`external.transferId`、`external.syncStatus: migrated` 与归属账号。普通持仓目录不等于已划转资产，不能直接入账。有效空数组会清空本次快照；错误响应保留最近有效数据，不回退到演示资产。
+
+外部平台手机号绑定和资产核销已提供联调框架：`POST /api/v1/integrations/platform/verification-codes` 发送验证码、`POST /api/v1/integrations/platform/bindings` 提交绑定、`GET /api/v1/integrations/platform/users/{userId}/assets?tplIds=100001,100002` 查询模板当前可核销数量、`POST /api/v1/integrations/platform/users/{userId}/migrations` 按模板数量核销并创建 Clipli 镜像。未配置 `CLIPLI_EXTERNAL_PLATFORM_URL` 时接口明确返回未配置错误；配置后由服务端按海文发协议调用作品、模板、绑定、计数和批量核销接口，认证头为 `x-app-id/x-app-key`。
 
 ## 运行
 
@@ -94,3 +96,13 @@ npx hardhat run scripts/deploy-bnb.js --network hardhat
 ```
 
 `ClipToken` 固定初始发行 9 亿、硬上限 10 亿；`AdaptiveMinter` 按经审计的指标、延迟和年度上限释放预留额度；`ClipAirdrop` 使用 Merkle 证明并按活动隔离托管余额。`ClipliDexPair` 仅用于本地 BNB/EVM 测试，生产兑换应接入经过审计的 PancakeSwap 路由，不应把测试 Pair 部署到主网。
+
+## 前端资产与平台绑定
+
+导航右上角同时提供钱包与外部平台入口。海文发通过现有短信验证和绑定接口关联账号，绑定后可查询平台持仓；OpenSea 等尚未接入的平台明确展示状态。资产仪表盘仅显示已确认划转的资产及来源凭据，没有资产时提供绑定引导。旧免验证绑定接口已经退役。
+
+此项目仍使用进程内账户与账本状态，不是正式多用户部署。真实账户认证、持久化、金库资金与结算执行器需要正式部署接入；默认不注入任何演示资产或金库余额。海文发迁移写入保留运营审核权限，浏览器不持有运营密钥。
+
+浏览器回归脚本为 `scripts/test-real-assets-ui.js`，需要可用的 Playwright 和本机 Chrome。启动本地服务后运行 `CLIPLI_TEST_URL=http://127.0.0.1:4175 node scripts/test-real-assets-ui.js`。验证码与持仓响应仅在测试浏览器中模拟，不会发送真实短信或操作外部资产。
+
+现有海文发本地配置使用测试接口。页面会标注测试环境，允许绑定与持仓联调；服务端禁止测试平台划转计入正式资产。真实划转需配置生产接口及正式结算条件。

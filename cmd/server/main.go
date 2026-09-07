@@ -33,7 +33,12 @@ func main() {
 	publicDir := envOr("PUBLIC_DIR", filepath.Join(root, "public"))
 	host, port := envOr("HOST", "127.0.0.1"), envOr("PORT", "4173")
 
-	memory := store.NewMemory(store.SeedState())
+	memory, closeStore, err := store.NewFileMemory(envOr("CLIPLI_STATE_FILE", filepath.Join(root, ".data", "clipli-state.json")), store.InitialState())
+	if err != nil {
+		logger.Error("open ledger", "error", err)
+		os.Exit(1)
+	}
+	defer closeStore()
 	if sourceURL := os.Getenv("HAPW_ASSET_SOURCE_URL"); sourceURL != "" {
 		state := memory.Snapshot()
 		startedAt := time.Now().UTC()
@@ -59,13 +64,20 @@ func main() {
 		state := memory.Snapshot()
 		loadedWorks, sourceErr := works.LoadRemote(context.Background(), sourceURL, state.Works)
 		if sourceErr != nil {
-			logger.Warn("work source unavailable; using seed works", "error", sourceErr)
+			logger.Warn("work source unavailable; retaining last verified works", "error", sourceErr)
 		} else {
 			_ = memory.Update(func(current *store.State) error { current.Works = loadedWorks; return nil })
 			logger.Info("remote work source loaded", "count", len(loadedWorks))
 		}
 	}
 	serviceLayer := service.New(memory)
+	if rpcURL := os.Getenv("CLIPLI_BNB_RPC_URL"); rpcURL != "" {
+		config := &service.BNBExecution{RPCURL: rpcURL, ChainID: "0x38", Token: os.Getenv("CLIPLI_CLIP_CONTRACT"), Treasury: os.Getenv("CLIPLI_TREASURY_ADDRESS"), Decimals: 18, Confirmations: 3}
+		if err := serviceLayer.ConfigureBNBExecution(config); err != nil {
+			logger.Error("verify CLIP treasury", "error", err)
+			os.Exit(1)
+		}
+	}
 	if rawMappings := strings.TrimSpace(os.Getenv("CLIPLI_EXTERNAL_ASSET_MAPPINGS")); rawMappings != "" {
 		var mappings []domain.ExternalAssetMappingRule
 		if err := json.Unmarshal([]byte(rawMappings), &mappings); err != nil {

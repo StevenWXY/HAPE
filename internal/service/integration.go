@@ -453,9 +453,9 @@ func (s *Service) UserAssets(userID string) (UserAssetsResult, error) {
 	if !validUserID(userID) {
 		return result, apiError(http.StatusBadRequest, "invalid_user_id", "A valid userId is required")
 	}
-	binding, ok := s.findBinding(userID)
-	if !ok {
-		return result, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
+	binding, err := s.verifiedBinding(userID)
+	if err != nil {
+		return result, err
 	}
 	portfolio, supported := s.platform.(ExternalAssetPortfolio)
 	if !supported {
@@ -495,9 +495,9 @@ func (s *Service) UserAssetCounts(userID string, tplIDs []int64) (UserAssetCount
 			return result, apiError(http.StatusBadRequest, "invalid_tpl_ids", "Template IDs must be positive integers")
 		}
 	}
-	binding, ok := s.findBinding(userID)
-	if !ok {
-		return result, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
+	binding, err := s.verifiedBinding(userID)
+	if err != nil {
+		return result, err
 	}
 	counter, ok := s.platform.(ExternalAssetCounter)
 	if !ok {
@@ -513,13 +513,20 @@ func (s *Service) UserAssetCounts(userID string, tplIDs []int64) (UserAssetCount
 	counts := make([]ExternalAssetCount, 0, len(items))
 	countsByTemplate := make(map[int64]int, len(items))
 	for _, item := range items {
-		if item.TplID <= 0 {
-			continue
+		if item.TplID <= 0 || item.Count < 0 {
+			return result, apiError(http.StatusBadGateway, "invalid_external_counts", "Haiwen returned invalid quantities")
 		}
-		countsByTemplate[item.TplID] = maxInt(item.Count, 0)
+		if _, duplicate := countsByTemplate[item.TplID]; duplicate {
+			return result, apiError(http.StatusBadGateway, "invalid_external_counts", "Haiwen returned duplicate template quantities")
+		}
+		countsByTemplate[item.TplID] = item.Count
 	}
 	for _, tplID := range tplIDs {
-		counts = append(counts, ExternalAssetCount{TplID: tplID, Count: countsByTemplate[tplID]})
+		count, present := countsByTemplate[tplID]
+		if !present {
+			return result, apiError(http.StatusBadGateway, "invalid_external_counts", "Haiwen omitted a requested template quantity")
+		}
+		counts = append(counts, ExternalAssetCount{TplID: tplID, Count: count})
 	}
 	result = UserAssetCountsResult{UserID: userID, ExternalUserID: binding.ExternalUserID, Items: counts, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "haiwen-/openapi/user/assets/count"}
 	return result, nil
@@ -532,6 +539,14 @@ func (s *Service) findBinding(userID string) (domain.ExternalPlatformBinding, bo
 		}
 	}
 	return domain.ExternalPlatformBinding{}, false
+}
+
+func (s *Service) verifiedBinding(userID string) (domain.ExternalPlatformBinding, error) {
+	if _, ok := s.findBinding(userID); !ok {
+		return domain.ExternalPlatformBinding{}, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
+	}
+	binding, _, err := s.GetBinding(userID)
+	return binding, err
 }
 
 func (s *Service) GetBinding(userID string) (domain.ExternalPlatformBinding, bool, error) {
@@ -549,9 +564,17 @@ func (s *Service) GetBinding(userID string) (domain.ExternalPlatformBinding, boo
 			return domain.ExternalPlatformBinding{}, false, mapPlatformError(err)
 		}
 		if !status.Bound {
+			_ = s.store.Update(func(state *store.State) error {
+				for index := range state.Bindings {
+					if state.Bindings[index].ID == binding.ID {
+						state.Bindings[index].Status = "unbound"
+					}
+				}
+				return nil
+			})
 			return domain.ExternalPlatformBinding{}, false, apiError(http.StatusNotFound, "binding_not_found", "The external platform no longer reports this user as bound")
 		}
-		if strings.TrimSpace(status.ExternalUserID) != "" && strings.TrimSpace(status.ExternalUserID) != binding.ExternalUserID {
+		if strings.TrimSpace(status.ExternalUserID) != binding.ExternalUserID {
 			return domain.ExternalPlatformBinding{}, false, apiError(http.StatusConflict, "external_binding_mismatch", "The external platform returned a different external user ID")
 		}
 		if boundAt := validExternalBoundAt(status.BoundAt); boundAt != "" && boundAt != binding.BoundAt {
@@ -648,7 +671,7 @@ func (s *Service) ExternalTemplates(page, pageSize int, workID int64) (ExternalT
 			copy := mapping
 			mappingPointer = &copy
 		}
-		views = append(views, ExternalTemplateView{Template: template, Mapping: mappingPointer, MigrationReady: mapped})
+		views = append(views, ExternalTemplateView{Template: template, Mapping: mappingPointer, MigrationReady: mapped && len(template.Owners) > 0})
 	}
 	return ExternalTemplatesResult{Items: views, Total: remote.Total, Page: remote.Page, PageSize: remote.PageSize, RetrievedAt: s.now().UTC().Format(time.RFC3339), SourceOfTruth: "haiwen-/openapi/tpls"}, nil
 }
@@ -690,6 +713,8 @@ func (s *Service) ExternalWorks(page, pageSize int) (ExternalWorksResult, error)
 // SetExternalAssetMappings replaces the server-managed Haiwen economics
 // mapping. It is intended for trusted startup configuration, not public input.
 func (s *Service) SetExternalAssetMappings(mappings []domain.ExternalAssetMappingRule) error {
+	s.externalMu.Lock()
+	defer s.externalMu.Unlock()
 	seen := make(map[int64]bool, len(mappings))
 	validated := make([]domain.ExternalAssetMappingRule, 0, len(mappings))
 	for _, mapping := range mappings {
@@ -698,7 +723,7 @@ func (s *Service) SetExternalAssetMappings(mappings []domain.ExternalAssetMappin
 		if mapping.Currency == "" {
 			mapping.Currency = "CNY"
 		}
-		if mapping.TplID <= 0 || mapping.Version == "" || mapping.CreditYield <= 0 || mapping.ClipPrice < 0 || seen[mapping.TplID] {
+		if mapping.TplID <= 0 || mapping.TplID > 9007199254740991 || mapping.Version == "" || mapping.CreditYield <= 0 || mapping.CreditYield > 1000000000 || mapping.ClipPrice < 0 || mapping.ClipPrice > 1000000000 || seen[mapping.TplID] {
 			return apiError(http.StatusBadRequest, "invalid_external_asset_mapping", "Each mapping requires a unique tplId, version, and positive creditYield")
 		}
 		seen[mapping.TplID] = true
@@ -711,14 +736,20 @@ func (s *Service) SetExternalAssetMappings(mappings []domain.ExternalAssetMappin
 }
 
 type MigrateExternalAssetInput struct {
-	UserID         string `json:"userId"`
-	ClipliUserID   string `json:"clipliUserId,omitempty"`
-	ExternalUserID string `json:"externalUserId,omitempty"`
-	TplID          int64  `json:"tplId"`
-	Num            int    `json:"num"`
-	RequestNo      string `json:"requestNo"`
-	RequestID      string `json:"requestId"`
-	Accepted       bool   `json:"accepted"`
+	UserID          string  `json:"userId"`
+	ClipliUserID    string  `json:"clipliUserId,omitempty"`
+	ExternalUserID  string  `json:"externalUserId,omitempty"`
+	TplID           int64   `json:"tplId"`
+	Num             int     `json:"num"`
+	RequestNo       string  `json:"requestNo"`
+	RequestID       string  `json:"requestId"`
+	Accepted        bool    `json:"accepted"`
+	WalletAddress   *string `json:"walletAddress,omitempty"`
+	ChainID         string  `json:"chainId,omitempty"`
+	MappingVersion  string  `json:"mappingVersion,omitempty"`
+	CreditYield     int     `json:"creditYield,omitempty"`
+	recipientWallet *string
+	recipientChain  string
 }
 
 type ExternalMigrationPreview struct {
@@ -753,7 +784,11 @@ func (s *Service) PreviewExternalAssetMigration(input MigrateExternalAssetInput)
 		return preview, err
 	}
 	mapping, mapped := findExternalAssetMapping(s.Snapshot().ExternalAssetMappings, input.TplID)
-	preview = ExternalMigrationPreview{Template: template, AvailableQuantity: count, RequestedQuantity: num, Reason: "mapping_required"}
+	preview = ExternalMigrationPreview{Template: template, CandidateAssets: []domain.HAPWAsset{}, AvailableQuantity: count, RequestedQuantity: num, Reason: "mapping_required"}
+	if len(template.Owners) == 0 {
+		preview.Reason = "external_rights_owner_missing"
+		return preview, nil
+	}
 	if mapped {
 		copy := mapping
 		preview.Mapping = &copy
@@ -772,6 +807,9 @@ func (s *Service) PreviewExternalAssetMigration(input MigrateExternalAssetInput)
 // same quantity at Haiwen, then atomically activates and settles the new
 // Clipli assets with Creation Credits and CLIP.
 func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (ExternalMigrationResult, bool, error) {
+	if s.ExternalPlatformSandbox() {
+		return ExternalMigrationResult{}, false, apiError(http.StatusConflict, "external_sandbox_transfer_disabled", "Sandbox platform transfers cannot create real Clipli assets")
+	}
 	var result ExternalMigrationResult
 	userID, binding, num, requestNo, err := s.validateExternalMigrationInput(input, true)
 	if err != nil {
@@ -783,7 +821,7 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 	state := s.Snapshot()
 	var migration domain.ExternalAssetMigration
 	for _, existing := range state.ExternalMigrations {
-		if existing.RequestID == input.RequestID || (existing.UserID == userID && existing.RequestNo == requestNo) {
+		if existing.RequestID == input.RequestID || existing.RequestNo == requestNo {
 			if existing.UserID != userID || existing.TplID != input.TplID || existing.Quantity != num || existing.RequestNo != requestNo {
 				return result, false, apiError(http.StatusConflict, "migration_request_reused", "The requestId or requestNo is already used for another migration")
 			}
@@ -809,9 +847,15 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 	if err != nil {
 		return result, false, err
 	}
+	if len(template.Owners) == 0 {
+		return result, false, apiError(http.StatusConflict, "external_rights_owner_missing", "The template does not identify its rights owner")
+	}
 	mapping, mapped := findExternalAssetMapping(s.Snapshot().ExternalAssetMappings, input.TplID)
 	if !mapped {
 		return result, false, apiError(http.StatusConflict, "external_asset_mapping_required", "Configure an active versioned mapping before migrating this template")
+	}
+	if input.MappingVersion != "" && (input.MappingVersion != mapping.Version || input.CreditYield != mapping.CreditYield) {
+		return result, false, apiError(http.StatusConflict, "migration_terms_changed", "Exchange terms changed; review the original request")
 	}
 	if migration.ID == "" {
 		available, countErr := s.externalHoldingCount(binding.ExternalUserID, input.TplID)
@@ -839,20 +883,30 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 			plannedClip += grant
 		}
 	}
-	if state.CLIPTreasury.TreasuryBalance < plannedClip {
+	if state.CLIPTreasury.TreasuryBalance+migration.TreasuryReserved < plannedClip {
 		return result, false, apiError(http.StatusServiceUnavailable, "clip_treasury_insufficient", "The platform treasury cannot satisfy this CLIP distribution")
 	}
 
 	now := s.now().UTC()
 	assets := migrationResult(state, migration).Assets
 	if migration.ID == "" {
-		assets = buildMigratedAssets(template, mapping, migrationOwner(userID, state.Profile.Wallet), requestNo, num, now, false)
+		wallet, chain := state.Profile.Wallet, state.Profile.WalletChainID
+		if input.recipientWallet != nil {
+			wallet, chain = *input.recipientWallet, input.recipientChain
+		}
+		assets = buildMigratedAssets(template, mapping, migrationOwner(userID, wallet), requestNo, num, now, false)
 		assetIDs := make([]string, len(assets))
 		for index := range assets {
 			assetIDs[index] = assets[index].ID
 		}
 		migration = domain.ExternalAssetMigration{ID: uniqueID("external-migration", now), RequestID: input.RequestID, RequestNo: requestNo, UserID: userID, ExternalUserID: binding.ExternalUserID, TplID: input.TplID, Quantity: num, MappingVersion: mapping.Version, ClipliAssetIDs: assetIDs, Status: "pending_external_write_off", CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339)}
+		migration.TreasuryReserved = plannedClip
+		migration.WalletAddress, migration.ChainID = wallet, chain
 		if err := s.store.Update(func(current *store.State) error {
+			if current.CLIPTreasury.TreasuryBalance < plannedClip {
+				return apiError(http.StatusServiceUnavailable, "clip_treasury_insufficient", "The platform treasury cannot reserve this distribution")
+			}
+			current.CLIPTreasury.TreasuryBalance -= plannedClip
 			current.Assets = append(assets, current.Assets...)
 			current.ExternalMigrations = prepend(migration, current.ExternalMigrations)
 			cacheExternalTemplates(current, []domain.ExternalAssetTemplate{template})
@@ -915,10 +969,15 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 	}
 	external, err := writer.WriteOffTemplate(context.Background(), ExternalTemplateWriteOffRequest{ExternalUserID: binding.ExternalUserID, RequestNo: requestNo, TplID: input.TplID, Num: num})
 	if err != nil {
-		markFailed("external_write_off_failed", err.Error())
+		status := "external_write_off_failed"
+		var platformErr *PlatformError
+		if errors.As(err, &platformErr) && platformErr.Code == "external_migration_response_mismatch" {
+			status = "reconciliation_required"
+		}
+		markFailed(status, err.Error())
 		return result, false, mapPlatformError(err)
 	}
-	if (external.TplID > 0 && external.TplID != input.TplID) || (external.Num > 0 && external.Num != num) || (external.Quantity > 0 && external.Quantity != num) {
+	if external.RequestNo != requestNo || external.Status != "SUCCESS" || external.TplID != input.TplID || external.Num != num || (external.ExternalUserID != "" && external.ExternalUserID != binding.ExternalUserID) || (external.Quantity > 0 && external.Quantity != num) {
 		markFailed("reconciliation_required", "Haiwen response tplId or quantity did not match the migration request")
 		return result, false, apiError(http.StatusBadGateway, "external_migration_response_mismatch", "Haiwen accepted the request but returned mismatched migration details; manual reconciliation is required")
 	}
@@ -927,6 +986,7 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 		externalTxID = strings.TrimSpace(external.TransactionID)
 	}
 	err = s.store.Update(func(current *store.State) error {
+		current.CLIPTreasury.TreasuryBalance += migration.TreasuryReserved
 		grantByAsset := make(map[string]int, len(migration.ClipliAssetIDs))
 		totalGrant := 0
 		for _, assetID := range migration.ClipliAssetIDs {
@@ -967,10 +1027,10 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 							return err
 						}
 						current.Redemptions = prepend(redemption, current.Redemptions)
-						if validWalletAddress(current.Profile.Wallet) {
-							queueRedemptionAirdrop(current, redemption, current.Profile.Wallet, current.Profile.WalletChainID, now)
+						if validWalletAddress(migration.WalletAddress) {
+							queueRedemptionAirdrop(current, redemption, migration.WalletAddress, migration.ChainID, now)
 						}
-						current.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-grant", now), TypeCode: "redemptionGrant", Type: "HAPW 核销领取", TypeEn: "HAPW redemption grant", TypeKo: "HAPW 상각 지급", Amount: grant, Counterparty: fmt.Sprintf("HAPW %s · %s", current.Assets[index].TokenID, current.Assets[index].Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", current.Assets[index].TokenID, current.Assets[index].NameEn), CounterpartyKo: current.Assets[index].NameKo, StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "0xgrant…migration", CreatedAt: formatMinute(now)}, current.CLIPTransactions)
+						current.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-grant", now), TypeCode: "redemptionGrant", Type: "HAPW 核销领取", TypeEn: "HAPW redemption grant", TypeKo: "HAPW 상각 지급", Amount: grant, Counterparty: fmt.Sprintf("HAPW %s · %s", current.Assets[index].TokenID, current.Assets[index].Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", current.Assets[index].TokenID, current.Assets[index].NameEn), CounterpartyKo: current.Assets[index].NameKo, StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "", CreatedAt: formatMinute(now)}, current.CLIPTransactions)
 						redemptionIDs = append(redemptionIDs, redemption.ID)
 						creditsGranted += redemption.CreditsGranted
 						clipGranted += redemption.ClipGranted
@@ -999,6 +1059,7 @@ func (s *Service) MigrateExternalAsset(input MigrateExternalAssetInput) (Externa
 				current.ExternalMigrations[index].CreditsGranted = creditsGranted
 				current.ExternalMigrations[index].ClipGranted = clipGranted
 				current.ExternalMigrations[index].Status = "completed_rewards_settled"
+				current.ExternalMigrations[index].TreasuryReserved = 0
 				current.ExternalMigrations[index].FailureReason = ""
 				current.ExternalMigrations[index].UpdatedAt = now.Format(time.RFC3339)
 				migration = current.ExternalMigrations[index]
@@ -1039,7 +1100,7 @@ func (s *Service) validateExternalMigrationInput(input MigrateExternalAssetInput
 	if !validUserID(userID) {
 		return "", domain.ExternalPlatformBinding{}, 0, "", apiError(http.StatusBadRequest, "invalid_user_id", "A valid userId is required")
 	}
-	if input.TplID <= 0 {
+	if input.TplID <= 0 || input.TplID > 9007199254740991 {
 		return "", domain.ExternalPlatformBinding{}, 0, "", apiError(http.StatusBadRequest, "invalid_tpl_id", "A positive tplId is required")
 	}
 	num := input.Num
@@ -1059,9 +1120,9 @@ func (s *Service) validateExternalMigrationInput(input MigrateExternalAssetInput
 	if requireConfirmation && !input.Accepted {
 		return "", domain.ExternalPlatformBinding{}, 0, "", apiError(http.StatusBadRequest, "migration_not_confirmed", "Confirm the irreversible Haiwen write-off")
 	}
-	binding, ok := s.findBinding(userID)
-	if !ok {
-		return "", domain.ExternalPlatformBinding{}, 0, "", apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
+	binding, err := s.verifiedBinding(userID)
+	if err != nil {
+		return "", domain.ExternalPlatformBinding{}, 0, "", err
 	}
 	if externalUserID := strings.TrimSpace(input.ExternalUserID); externalUserID != "" && externalUserID != binding.ExternalUserID {
 		return "", domain.ExternalPlatformBinding{}, 0, "", apiError(http.StatusConflict, "binding_conflict", "The Clipli user is bound to a different external user")
@@ -1111,11 +1172,11 @@ func (s *Service) externalHoldingCount(externalUserID string, tplID int64) (int,
 		return 0, mapPlatformError(err)
 	}
 	for _, item := range items {
-		if item.TplID == tplID {
-			return maxInt(item.Count, 0), nil
+		if item.TplID == tplID && item.Count >= 0 {
+			return item.Count, nil
 		}
 	}
-	return 0, nil
+	return 0, apiError(http.StatusBadGateway, "invalid_external_counts", "Haiwen omitted the requested template quantity")
 }
 
 func (s *Service) cacheExternalTemplates(templates []domain.ExternalAssetTemplate) {
@@ -1192,7 +1253,7 @@ func buildMigratedAssets(template domain.ExternalAssetTemplate, mapping domain.E
 			Authorization:  domain.Authorization{Holder: domain.LocalizedText{ZH: rightsHolder, EN: rightsHolder, KO: rightsHolder}, Scope: domain.LocalizedText{ZH: "以海文发原始模板及权利文件为准", EN: "Governed by the original Haiwen template and rights documents", KO: "Haiwen 원본 템플릿 및 권리 문서 기준"}, Territories: []string{}, UsageTypes: []string{}, Exclusivity: "source-defined", ValidFrom: now.Format("2006-01-02")},
 			Provenance:     domain.Provenance{Issuer: "海文发", CertificateID: "HAIWEN-TPL-" + strconv.FormatInt(template.TplID, 10) + "-" + suffix, Network: "haiwen", TokenStandard: "HAIWEN-TEMPLATE-MIRROR", VerificationStatus: "pending-external-write-off", IssuedAt: now.Format("2006-01-02")},
 			Media:          domain.AssetMedia{LinkedWorkIDs: []string{"haiwen-work-" + strconv.FormatInt(template.WorkID, 10)}, Format: "source-template", PreviewURL: template.Image},
-			External:       domain.ExternalAssetRef{ProviderCode: "haiwen", ProviderAssetID: strconv.FormatInt(template.TplID, 10), SyncStatus: "pending-write-off", LastSyncedAt: now.Format(time.RFC3339), DataVersion: mapping.Version},
+			External:       domain.ExternalAssetRef{TransferID: requestNo, ProviderCode: "haiwen", ProviderAssetID: strconv.FormatInt(template.TplID, 10), SyncStatus: "pending-write-off", LastSyncedAt: now.Format(time.RFC3339), DataVersion: mapping.Version},
 			SourceTemplate: &template,
 		}
 		if active {
@@ -1305,9 +1366,9 @@ func (s *Service) RedeemExternalAsset(input RedeemExternalAssetInput) (ExternalR
 	if input.RequestID != "" && !validRequestID(input.RequestID) {
 		return result, false, apiError(http.StatusBadRequest, "invalid_request_id", "A valid operation id is required")
 	}
-	binding, ok := s.findBinding(userID)
-	if !ok {
-		return result, false, apiError(http.StatusConflict, "user_not_bound", "Bind the Clipli user to the external platform first")
+	binding, err := s.verifiedBinding(userID)
+	if err != nil {
+		return result, false, err
 	}
 	if capability, declared := s.platform.(ExternalItemizedAssetCapability); declared && !capability.SupportsItemizedAssets() {
 		return result, false, apiError(http.StatusNotImplemented, "external_itemized_asset_unsupported", "Haiwen supports template batch write-off only; no individual asset ID or serial number exists")
@@ -1723,6 +1784,9 @@ func (p *HTTPExternalPlatform) request(ctx context.Context, method, path string,
 		}
 		return &PlatformError{Status: status, Code: code, Message: message}
 	}
+	if !decodedEnvelope || len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_response", Message: "Haiwen returned an incomplete response envelope"}
+	}
 	if output != nil && len(data) > 0 {
 		if decodedEnvelope {
 			if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
@@ -1786,6 +1850,9 @@ func (p *HTTPExternalPlatform) BindUser(ctx context.Context, input BindUserReque
 		SMSCode        string `json:"smsCode"`
 	}{ExternalUserID: externalUserID, Phone: input.Phone, SMSCode: code}
 	err := p.request(ctx, http.MethodPost, "/openapi/user/bind", payload, &result)
+	if err == nil && (result.ExternalUserID != externalUserID || !result.Bound || validExternalBoundAt(result.BoundAt) == "") {
+		return result, &PlatformError{Status: http.StatusBadGateway, Code: "external_binding_mismatch", Message: "Haiwen returned an incomplete or mismatched binding"}
+	}
 	if err == nil && result.Bound {
 		result.Status = "bound"
 	}
@@ -1806,6 +1873,9 @@ func (p *HTTPExternalPlatform) GetBindingStatus(ctx context.Context, externalUse
 	query := url.Values{"externalUserId": []string{externalUserID}}
 	var result ExternalBindingStatus
 	err := p.request(ctx, http.MethodGet, "/openapi/user/bind/status?"+query.Encode(), nil, &result)
+	if err == nil && (result.ExternalUserID != externalUserID || (result.Bound && validExternalBoundAt(result.BoundAt) == "")) {
+		return result, &PlatformError{Status: http.StatusBadGateway, Code: "external_binding_mismatch", Message: "Haiwen returned an incomplete or mismatched binding status"}
+	}
 	return result, err
 }
 
@@ -1822,6 +1892,9 @@ func (p *HTTPExternalPlatform) ListWorks(ctx context.Context, page, pageSize int
 	}
 	if err := p.request(ctx, http.MethodGet, "/openapi/works?"+query.Encode(), nil, &payload); err != nil {
 		return ExternalWorkPage{}, err
+	}
+	if payload.List == nil || payload.Total < len(payload.List) || payload.PageNum != page || payload.PageSize != pageSize || len(payload.List) > pageSize {
+		return ExternalWorkPage{}, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_catalog", Message: "Haiwen returned incomplete work pagination"}
 	}
 	for index := range payload.List {
 		if err := normalizeExternalWork(&payload.List[index]); err != nil {
@@ -1854,6 +1927,9 @@ func (p *HTTPExternalPlatform) ListTemplates(ctx context.Context, page, pageSize
 	if err := p.request(ctx, http.MethodGet, "/openapi/tpls?"+query.Encode(), nil, &payload); err != nil {
 		return ExternalTemplatePage{}, err
 	}
+	if payload.List == nil || payload.Total < len(payload.List) || payload.PageNum != page || payload.PageSize != pageSize || len(payload.List) > pageSize {
+		return ExternalTemplatePage{}, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_catalog", Message: "Haiwen returned incomplete template pagination"}
+	}
 	for index := range payload.List {
 		if err := normalizeExternalTemplate(&payload.List[index]); err != nil {
 			return ExternalTemplatePage{}, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_template", Message: err.Error()}
@@ -1871,7 +1947,7 @@ func (p *HTTPExternalPlatform) ListTemplates(ctx context.Context, page, pageSize
 func normalizeExternalWork(work *domain.ExternalWork) error {
 	work.WorksName = strings.TrimSpace(work.WorksName)
 	work.WorksTypeName = strings.TrimSpace(work.WorksTypeName)
-	if work.WorkID <= 0 || work.WorksName == "" || work.PublishNum < 0 {
+	if work.WorkID <= 0 || work.WorkID > 9007199254740991 || work.WorksName == "" || work.PublishNum < 0 {
 		return errors.New("Haiwen returned an incomplete work")
 	}
 	for index := range work.Authors {
@@ -1916,21 +1992,32 @@ func (p *HTTPExternalPlatform) ListAssetCounts(ctx context.Context, externalUser
 		ExternalUserID string `json:"externalUserId"`
 		List           []struct {
 			TplID int64 `json:"tplId"`
-			Count int   `json:"count"`
+			Count *int  `json:"count"`
 		} `json:"list"`
 	}
 	if err := p.request(ctx, http.MethodGet, "/openapi/user/assets/count?"+query.Encode(), nil, &payload); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(payload.ExternalUserID) != "" && strings.TrimSpace(payload.ExternalUserID) != externalUserID {
+	if strings.TrimSpace(payload.ExternalUserID) != externalUserID {
 		return nil, &PlatformError{Status: http.StatusConflict, Code: "external_binding_mismatch", Message: "The external platform returned a different external user ID"}
 	}
 	items := make([]domain.ExternalTemplateCount, 0, len(payload.List))
+	requested := make(map[int64]bool, len(tplIDs))
+	for _, id := range tplIDs {
+		requested[id] = false
+	}
 	for _, item := range payload.List {
-		if item.TplID <= 0 {
-			continue
+		seen, expected := requested[item.TplID]
+		if !expected || seen || item.Count == nil || *item.Count < 0 {
+			return nil, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_counts", Message: "Haiwen returned invalid or duplicate template quantities"}
 		}
-		items = append(items, domain.ExternalTemplateCount{TplID: item.TplID, Count: maxInt(item.Count, 0), SourceCode: "haiwen"})
+		requested[item.TplID] = true
+		items = append(items, domain.ExternalTemplateCount{TplID: item.TplID, Count: *item.Count, SourceCode: "haiwen"})
+	}
+	for _, present := range requested {
+		if !present {
+			return nil, &PlatformError{Status: http.StatusBadGateway, Code: "invalid_external_counts", Message: "Haiwen omitted a requested template quantity"}
+		}
 	}
 	return items, nil
 }
@@ -1939,7 +2026,7 @@ func normalizeExternalTemplate(template *domain.ExternalAssetTemplate) error {
 	template.Name = strings.TrimSpace(template.Name)
 	template.WorksName = strings.TrimSpace(template.WorksName)
 	template.WorksTypeName = strings.TrimSpace(template.WorksTypeName)
-	if template.TplID <= 0 || template.Name == "" || template.WorkID <= 0 || template.WorksName == "" || template.PublishCount < 0 {
+	if template.TplID <= 0 || template.TplID > 9007199254740991 || template.Name == "" || template.WorkID <= 0 || template.WorkID > 9007199254740991 || template.WorksName == "" || template.PublishCount < 0 {
 		return errors.New("Haiwen returned an incomplete copyright template")
 	}
 	for index := range template.Authors {
@@ -1947,9 +2034,6 @@ func normalizeExternalTemplate(template *domain.ExternalAssetTemplate) error {
 	}
 	for index := range template.Owners {
 		template.Owners[index].Name = strings.TrimSpace(template.Owners[index].Name)
-	}
-	if len(template.Owners) == 0 {
-		return errors.New("Haiwen template does not identify a rights owner")
 	}
 	template.Image = strings.TrimSpace(template.Image)
 	if template.Image != "" {
@@ -1994,24 +2078,10 @@ func (p *HTTPExternalPlatform) WriteOffTemplate(ctx context.Context, input Exter
 	if err := p.request(ctx, http.MethodPost, "/openapi/asset/write-off", payload, &result); err != nil {
 		return result, err
 	}
-	if result.RequestNo == "" {
-		result.RequestNo = requestNo
+	if result.RequestNo != requestNo || result.ExternalUserID != externalUserID || result.TplID != tplID || result.Num != num || result.Status != "SUCCESS" || validExternalBoundAt(result.WriteOffAt) == "" {
+		return result, &PlatformError{Status: http.StatusBadGateway, Code: "external_migration_response_mismatch", Message: "Haiwen returned an incomplete or mismatched write-off receipt"}
 	}
-	if result.ExternalUserID == "" {
-		result.ExternalUserID = externalUserID
-	}
-	if result.TplID == 0 {
-		result.TplID = tplID
-	}
-	if result.Num == 0 {
-		result.Num = num
-	}
-	if result.Quantity == 0 {
-		result.Quantity = result.Num
-	}
-	if result.Status == "" {
-		result.Status = "SUCCESS"
-	}
+	result.Quantity = result.Num
 	return result, nil
 }
 

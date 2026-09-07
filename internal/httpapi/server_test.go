@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/StevenWXY/HAPE/internal/testfixture"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,7 +24,7 @@ func testHandler(t *testing.T) http.Handler {
 	if err := os.WriteFile(filepath.Join(publicDir, "admin.html"), []byte("<html>Clipli admin.js</html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return New(service.New(store.NewMemory(store.SeedState())), publicDir, logger)
+	return New(service.New(store.NewMemory(testfixture.SeedState()), service.NewDemoExternalPlatform()), publicDir, logger)
 }
 
 func testHandlerWithService(t *testing.T, serviceLayer *service.Service) http.Handler {
@@ -132,7 +133,7 @@ func TestHAPWReadRoutesAndWriteWorkflow(t *testing.T) {
 		"/api/v1/hapw/assets/asset-2048/authorization",
 		"/api/v1/hapw/assets/asset-2048/history",
 		"/api/v1/hapw/assets/asset-2048/works",
-		"/api/v1/hapw/assets/asset-2048/exchange-quote",
+		"/api/v1/hapw/assets/asset-528/exchange-quote",
 		"/api/v1/hapw/redemptions",
 		"/api/v1/hapw/exercises",
 		"/api/v1/hapw/exchanges",
@@ -208,7 +209,7 @@ func TestHAPWReadRoutesAndWriteWorkflow(t *testing.T) {
 		t.Fatalf("wallet status = %d", status)
 	}
 	status, _ = doJSONRequest(t, handler, http.MethodPost, "/api/profile/overseas", map[string]any{"account": "HWF-TEST-2048"})
-	if status != http.StatusOK {
+	if status != http.StatusGone {
 		t.Fatalf("account bind status = %d", status)
 	}
 	status, _ = doJSONRequest(t, handler, http.MethodPatch, "/api/profile/settings", map[string]any{"walletSign": false})
@@ -216,7 +217,7 @@ func TestHAPWReadRoutesAndWriteWorkflow(t *testing.T) {
 		t.Fatalf("settings status = %d", status)
 	}
 	status, _ = doJSONRequest(t, handler, http.MethodDelete, "/api/profile/overseas", nil)
-	if status != http.StatusOK {
+	if status != http.StatusGone {
 		t.Fatalf("account unbind status = %d", status)
 	}
 
@@ -289,7 +290,7 @@ func TestAirdropAdminAndExecutorAuth(t *testing.T) {
 	resultReq.Header.Set("X-Clipli-Executor-Key", "executor-test-key")
 	resultRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(resultRecorder, resultReq)
-	if resultRecorder.Code != http.StatusOK || !bytes.Contains(resultRecorder.Body.Bytes(), []byte(`"status":"confirmed"`)) {
+	if resultRecorder.Code != http.StatusServiceUnavailable || !bytes.Contains(resultRecorder.Body.Bytes(), []byte(`"code":"airdrop_executor_not_configured"`)) {
 		t.Fatalf("executor result status=%d body=%s", resultRecorder.Code, resultRecorder.Body.String())
 	}
 }
@@ -339,7 +340,7 @@ func TestBNBAdminSimulation(t *testing.T) {
 	simulate.Header.Set("X-Clipli-Admin-Key", "admin-test-key")
 	simulated := httptest.NewRecorder()
 	handler.ServeHTTP(simulated, simulate)
-	if simulated.Code != http.StatusOK || !bytes.Contains(simulated.Body.Bytes(), []byte(`"simulated":true`)) || !bytes.Contains(simulated.Body.Bytes(), []byte(`"executionMode":"simulated-bnb"`)) {
+	if simulated.Code != http.StatusGone || !bytes.Contains(simulated.Body.Bytes(), []byte(`"code":"airdrop_simulation_disabled"`)) {
 		t.Fatalf("simulate status=%d body=%s", simulated.Code, simulated.Body.String())
 	}
 }
@@ -396,7 +397,7 @@ func TestExternalPlatformBindingAndRedemptionRoutes(t *testing.T) {
 
 func TestHaiwenTemplateAndMigrationRoutes(t *testing.T) {
 	t.Setenv("CLIPLI_ADMIN_API_KEY", "admin-test-key")
-	serviceLayer := service.New(store.NewMemory(store.SeedState()))
+	serviceLayer := service.New(store.NewMemory(testfixture.SeedState()), service.NewDemoExternalPlatform())
 	if err := serviceLayer.SetExternalAssetMappings([]domain.ExternalAssetMappingRule{{TplID: 100001, Version: "test-v1", CreditYield: 150, ClipPrice: 520, Currency: "CNY", Active: true}}); err != nil {
 		t.Fatal(err)
 	}

@@ -44,6 +44,7 @@ type AssetMedia struct {
 // ExternalAssetRef identifies the upstream platform record used to build the
 // normalized HAPW view. Clipli does not become the source of truth for assets.
 type ExternalAssetRef struct {
+	TransferID      string `json:"transferId,omitempty"`
 	ProviderCode    string `json:"providerCode"`
 	ProviderAssetID string `json:"providerAssetId"`
 	AssetURL        string `json:"assetUrl,omitempty"`
@@ -138,6 +139,8 @@ type CLIPPool struct {
 type CLIPAccount struct {
 	Symbol              string   `json:"symbol"`
 	Balance             int      `json:"balance"`
+	Reserved            int      `json:"reserved"`
+	AvailableBalance    int      `json:"availableBalance"`
 	SupplyPolicy        string   `json:"supplyPolicy"`
 	SupplyPolicyEn      string   `json:"supplyPolicyEn"`
 	Acquisition         string   `json:"acquisition"`
@@ -183,6 +186,7 @@ type CLIPTreasury struct {
 	TreasuryBalance     int    `json:"treasuryBalance"`
 	LiquidityAllocation int    `json:"liquidityAllocation"`
 	LedgerOutstanding   int    `json:"ledgerOutstanding"`
+	OnchainDistributed  int    `json:"onchainDistributed"`
 	TotalDistributed    int    `json:"totalDistributed"`
 	TotalReclaimed      int    `json:"totalReclaimed"`
 	PlatformWallet      string `json:"platformWallet"`
@@ -470,6 +474,9 @@ type ExternalAssetMigration struct {
 	TplID                int64    `json:"tplId"`
 	Quantity             int      `json:"quantity"`
 	MappingVersion       string   `json:"mappingVersion"`
+	TreasuryReserved     int      `json:"treasuryReserved"`
+	WalletAddress        string   `json:"walletAddress,omitempty"`
+	ChainID              string   `json:"chainId,omitempty"`
 	ClipliAssetIDs       []string `json:"clipliAssetIds"`
 	RedemptionIDs        []string `json:"redemptionIds,omitempty"`
 	CreditsGranted       int      `json:"creditsGranted"`
@@ -479,6 +486,27 @@ type ExternalAssetMigration struct {
 	FailureReason        string   `json:"failureReason,omitempty"`
 	CreatedAt            string   `json:"createdAt"`
 	UpdatedAt            string   `json:"updatedAt"`
+}
+
+type MigrationRequest struct {
+	ID             string `json:"id"`
+	UserID         string `json:"userId"`
+	RequestID      string `json:"requestId"`
+	RequestNo      string `json:"requestNo"`
+	ExternalUserID string `json:"externalUserId"`
+	TplID          int64  `json:"tplId"`
+	Name           string `json:"name"`
+	Quantity       int    `json:"quantity"`
+	MappingVersion string `json:"mappingVersion"`
+	CreditYield    int    `json:"creditYield"`
+	ClipGrant      int    `json:"clipGrant"`
+	WalletAddress  string `json:"walletAddress,omitempty"`
+	ChainID        string `json:"chainId,omitempty"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+	MigrationID    string `json:"migrationId,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
 }
 
 // ExternalAssetRedemption is an audit record for a serial-numbered

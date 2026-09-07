@@ -83,6 +83,8 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 		mux.HandleFunc("GET "+prefix+"/users/{userID}/migrations", handler.externalMigrations)
 		mux.HandleFunc("POST "+prefix+"/users/{userID}/migrations/preview", handler.previewExternalMigration)
 		mux.HandleFunc("POST "+prefix+"/users/{userID}/migrations", handler.migrateExternalAsset)
+		mux.HandleFunc("GET "+prefix+"/users/{userID}/migration-requests", handler.migrationRequests)
+		mux.HandleFunc("POST "+prefix+"/users/{userID}/migration-requests", handler.requestMigration)
 		mux.HandleFunc("POST "+prefix+"/users/{userID}/assets/{assetID}/redemptions", handler.redeemExternalAsset)
 	}
 	// Short aliases are useful for partner onboarding and preserve the same
@@ -111,6 +113,10 @@ func New(serviceLayer *service.Service, publicDir string, logger *slog.Logger) h
 	mux.HandleFunc("GET /api/v1/integrations/assets", handler.userAssetsByQuery)
 	mux.HandleFunc("POST /api/v1/integrations/redemptions", handler.redeemExternalAssetBody)
 	mux.HandleFunc("GET /api/v1/admin/airdrops", handler.adminAirdrops)
+	mux.HandleFunc("GET /api/v1/admin/migration-requests", handler.adminMigrationRequests)
+	mux.HandleFunc("POST /api/v1/admin/migration-requests/{requestID}/review", handler.reviewMigrationRequest)
+	mux.HandleFunc("POST /api/v1/wallet/airdrops", handler.walletCreateAirdrop)
+	mux.HandleFunc("POST /api/v1/wallet/airdrops/{airdropID}/cancel", handler.cancelWalletAirdrop)
 	mux.HandleFunc("POST /api/v1/admin/airdrops", handler.adminCreateAirdrop)
 	mux.HandleFunc("POST /api/v1/admin/airdrops/{airdropID}/simulate", handler.simulateAirdrop)
 	mux.HandleFunc("GET /api/v1/admin/bnb-networks", handler.adminBNBNetworks)
@@ -155,10 +161,20 @@ func (h *Handler) adminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) overview(w http.ResponseWriter, _ *http.Request) {
-	state := h.service.Snapshot()
+	state := h.service.PortfolioSnapshot()
+	var featured *domain.HAPWAsset
+	if len(state.Assets) > 0 {
+		featured = &state.Assets[0]
+	}
+	completed := 0
+	for _, item := range state.Exercises {
+		if item.StatusCode == "completed" {
+			completed++
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"counts":        map[string]any{"authorized": 18420, "overseas": 2908, "visible": 86, "redeemed": len(state.Redemptions), "credits": state.GenerationAccount.Balance, "clipGranted": state.GenerationAccount.LifetimeClipGranted},
-		"featuredAsset": state.Assets[0], "steps": []string{"hold", "redeem", "grant", "generate"},
+		"counts":        map[string]any{"authorized": len(state.Assets), "overseas": completed, "visible": len(state.Works), "redeemed": len(state.Redemptions), "credits": state.GenerationAccount.Balance, "clipGranted": state.GenerationAccount.LifetimeClipGranted},
+		"featuredAsset": featured, "steps": []string{"hold", "redeem", "grant", "generate"},
 	}})
 }
 
@@ -176,11 +192,11 @@ func (h *Handler) work(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) assetsDashboard(w http.ResponseWriter, _ *http.Request) {
-	state := h.service.Snapshot()
+	state := h.service.AccountSnapshot()
 	assets := make([]domain.HAPWAsset, 0, len(state.Assets))
 	holdings, transferable, totalValue := 0, 0, 0
 	for _, asset := range state.Assets {
-		if asset.Kind != "HAPW" || asset.Owner != "Clipli" {
+		if asset.Kind != "HAPW" {
 			continue
 		}
 		assets = append(assets, asset)
@@ -206,7 +222,7 @@ func (h *Handler) assetsDashboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) studio(w http.ResponseWriter, _ *http.Request) {
-	state := h.service.Snapshot()
+	state := h.service.AccountSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"assets": state.Assets, "generationAccount": state.GenerationAccount, "redemptions": state.Redemptions,
 		"generations": state.Generations, "clip": clipView(state),
@@ -221,7 +237,8 @@ func (h *Handler) profile(w http.ResponseWriter, _ *http.Request) {
 		"wallet": state.Profile.Wallet, "walletProvider": state.Profile.WalletProvider, "walletChainId": state.Profile.WalletChainID, "walletStatus": state.Profile.WalletStatus, "walletConnectedAt": state.Profile.WalletConnectedAt, "overseasAccount": state.Profile.OverseasAccount,
 		"phone": state.Profile.Phone, "level": state.Profile.Level, "points": state.Profile.Points,
 		"settings": state.Profile.Settings, "clipBalance": state.CLIP.Balance, "session": state.Session,
-		"walletAssets": walletAssets, "airdrops": airdrops,
+		"walletAssets": walletAssets, "airdrops": airdrops, "clip": state.CLIP,
+		"externalPlatform": map[string]any{"code": "haiwen", "configured": h.service.ExternalPlatformConfigured(), "sandbox": h.service.ExternalPlatformSandbox()},
 	}})
 }
 
@@ -331,9 +348,16 @@ func (h *Handler) adminBNBNetworks(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
+	networks := service.BNBChainConfigs()
+	for i := range networks {
+		if networks[i].ChainID == "0x38" {
+			networks[i].ContractDeployed = h.service.Snapshot().CLIPTreasury.MintStatus == "onchain-verified"
+			networks[i].SimulationOnly = false
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"items": service.BNBChainConfigs(), "contractDeployed": false, "simulationOnly": true,
-		"note": "No BEP-20 contract or chain RPC is configured yet. Simulation confirms the platform ledger and queue flow only.",
+		"items": networks, "contractDeployed": h.service.Snapshot().CLIPTreasury.MintStatus == "onchain-verified", "simulationOnly": false,
+		"note": "Real airdrops require the configured CLIP mainnet contract, funded treasury and verified receipts.",
 	}})
 }
 
@@ -347,12 +371,7 @@ func (h *Handler) simulateAirdrop(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &input) {
 		return
 	}
-	result, err := h.service.SimulateAirdrop(r.PathValue("airdropID"), input.ChainID)
-	if err != nil {
-		h.writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+	writeError(w, http.StatusGone, "airdrop_simulation_disabled", "Real asset ledgers cannot accept simulated transfers")
 }
 
 func (h *Handler) updateAirdropResult(w http.ResponseWriter, r *http.Request) {
@@ -912,23 +931,12 @@ func (h *Handler) disconnectWallet(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": h.service.DisconnectWallet()})
 }
 
-func (h *Handler) setOverseasAccount(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Account string `json:"account"`
-	}
-	if !decodeBody(w, r, &input) {
-		return
-	}
-	profile, err := h.service.SetOverseasAccount(input.Account)
-	if err != nil {
-		h.writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": profile})
+func (h *Handler) setOverseasAccount(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusGone, "verified_binding_required", "Use the external platform SMS verification and binding endpoints")
 }
 
 func (h *Handler) clearOverseasAccount(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"data": h.service.ClearOverseasAccount()})
+	writeError(w, http.StatusGone, "external_unbinding_unsupported", "Unbinding requires the external platform; local profile edits cannot unlink the account")
 }
 
 func (h *Handler) updateSettings(w http.ResponseWriter, r *http.Request) {
@@ -994,7 +1002,7 @@ func requireSecret(w http.ResponseWriter, r *http.Request, configured, header, m
 
 func (h *Handler) security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -1091,7 +1099,7 @@ func clipView(state store.State) map[string]any {
 	pool, _ := service.BuildDexPoolSnapshot(state.CLIP.DexPool)
 	policy := service.BuildExchangePolicy(state.HAPWExchanges, state.Assets, time.Now())
 	return map[string]any{
-		"symbol": state.CLIP.Symbol, "balance": state.CLIP.Balance,
+		"symbol": state.CLIP.Symbol, "balance": state.CLIP.Balance, "reserved": state.CLIP.Reserved, "availableBalance": state.CLIP.Balance - state.CLIP.Reserved,
 		"supplyPolicy": state.CLIP.SupplyPolicy, "supplyPolicyEn": state.CLIP.SupplyPolicyEn,
 		"acquisition": state.CLIP.Acquisition, "acquisitionEn": state.CLIP.AcquisitionEn, "acquisitionKo": state.CLIP.AcquisitionKo,
 		"quoteAsset":  state.CLIP.QuoteAsset,

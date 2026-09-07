@@ -41,7 +41,7 @@ const translations = {
     bindEyebrow: "HWF connect", bindTitle: "绑定海文发账号", bindLead: "同步发行等级、渠道权益与可用服务，不会同步支付密码或身份凭证。",
     overseasAccount: "海文发账号", authorizedAccount: "已授权", phone: "手机号绑定", points: "积分", benefits: "已激活海外发行权益",
     priority: "海外渠道优先级 +1", discount: "服务手续费减免 10%", quota: "每月本地化额度 +60 CLIP",
-    bindAction: "绑定账号", unbind: "解除绑定", accountPlaceholder: "输入海文发账号",
+    bindAction: "绑定", unbind: "解除绑定", accountPlaceholder: "输入海文发账号",
     walletEyebrow: "Web3 login", walletTitle: "连接钱包", walletLead: "选择钱包完成演示登录。平台不会索取或保存私钥与助记词。",
     browserWallet: "浏览器扩展钱包", mobileWallet: "移动端连接", walletService: "Web3 钱包服务", selected: "已选择",
     connectSelected: "连接所选钱包", connected: "已连接", chooseWallet: "请先选择钱包",
@@ -149,8 +149,8 @@ const state = {
   selectedWallet: "",
   generationDuration: 15,
   generationQuality: "standard",
-  assetGuide: readAssetGuideProgress(),
-  assetGuideFeedbackKey: ""
+  bindingTimer: null,
+  bindingResendAt: 0
 };
 
 const navItems = [
@@ -188,33 +188,6 @@ function operationId(prefix) {
   return prefix + "-" + id;
 }
 
-const ASSET_GUIDE_STORAGE_KEY = "clipli-asset-guide-v1";
-
-function readAssetGuideProgress() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(ASSET_GUIDE_STORAGE_KEY) || "{}");
-    return {
-      redeem: saved.redeem === true,
-      exchange: saved.exchange === true,
-      dex: saved.dex === true
-    };
-  } catch {
-    return { redeem: false, exchange: false, dex: false };
-  }
-}
-
-function updateAssetGuide(step, feedbackKey) {
-  state.assetGuide = Object.assign({}, state.assetGuide, { [step]: true });
-  state.assetGuideFeedbackKey = feedbackKey;
-  localStorage.setItem(ASSET_GUIDE_STORAGE_KEY, JSON.stringify(state.assetGuide));
-}
-
-function resetAssetGuide() {
-  state.assetGuide = { redeem: false, exchange: false, dex: false };
-  state.assetGuideFeedbackKey = "guideFeedbackReset";
-  localStorage.removeItem(ASSET_GUIDE_STORAGE_KEY);
-}
-
 function local(item, key) {
   if (!item) return "";
   if (state.lang === "zh") return escapeHtml(item[key]);
@@ -241,8 +214,10 @@ function money(value) {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
 }
 
+let pageController = null;
 function api(path, options) {
   return fetch(path, Object.assign({
+    signal: (!options || !options.method || options.method === "GET") ? pageController?.signal : undefined,
     headers: { "Content-Type": "application/json" }
   }, options || {})).then(async response => {
     const payload = await response.json();
@@ -281,7 +256,8 @@ function header() {
     [["zh", "中文"], ["en", "EN"], ["es", "ES"], ["ja", "日本語"], ["fr", "FR"], ["ko", "한국어"]].map(item => '<option value="' + item[0] + '" ' + (state.lang === item[0] ? "selected" : "") + '>' + item[1] + '</option>').join(""),
     '</select></label>',
     '<button class="icon-button theme-button" type="button" data-theme-toggle aria-label="', t(state.theme === "dark" ? "themeLight" : "themeDark"), '" title="', t(state.theme === "dark" ? "themeLight" : "themeDark"), '"><span aria-hidden="true">', state.theme === "dark" ? "☀" : "☾", '</span></button>',
-    '<a class="icon-button" href="#/wallet" aria-label="', t("connect"), '" title="', t("connect"), '">◇</a>',
+    '<a class="nav-account platform-nav" href="#/bind" aria-label="', t("bindTitle"), '"><span aria-hidden="true">⊞</span><span class="nav-account-label">', t("navPlatforms"), '</span><span class="nav-account-short">', t("navPlatformsShort"), '</span></a>',
+    '<a class="nav-account" href="#/wallet" aria-label="', t("connect"), '"><span aria-hidden="true">◇</span><span class="nav-account-label">', t("connect"), '</span><span class="nav-account-short">', t("navWalletShort"), '</span></a>',
     '<button class="icon-button menu-button" id="menu-toggle" type="button" aria-label="', t("menu"), '" aria-expanded="', state.menuOpen, '">≡</button>',
     '</div></div></header>'
   ].join("");
@@ -339,7 +315,7 @@ async function renderHome() {
   const metrics = [
     [money(data.counts.authorized), t("authorized")],
     [money(data.counts.overseas), t("overseas")],
-    [data.counts.visible + "%", t("visibility")]
+    [money(data.counts.visible), t("activityWorks")]
   ].map(item => '<div class="metric"><strong>' + item[0] + '</strong><span>' + item[1] + "</span></div>").join("");
   const featureKeys = [["01", "feature1", "feature1Desc"], ["02", "feature2", "feature2Desc"], ["03", "feature3", "feature3Desc"]];
   const featureIcons = ["◈", "⌁", "◎"];
@@ -364,11 +340,11 @@ async function renderHome() {
     '</p><div class="brand-pillars">', brandPillars, '</div><div class="hero-actions"><a class="button primary" href="#/studio">', t("openStudio"), '<span class="button-icon">→</span></a><a class="button" href="#/works">', t("browseWorks"), '</a></div>',
     '<div class="hero-metrics">', metrics, '</div></div>',
     '<div class="iso-stage" aria-label="Isometric Clipli asset"><div class="iso-grid"></div><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="iso-tower"><div class="cube one"><span></span></div><div class="cube two"><span></span></div><div class="cube three"><span></span></div></div>',
-    '<a class="asset-float" href="#/studio"><small>', t("creditYield"), '</small><strong>HAPW ', escapeHtml(asset.tokenId), ' · ', asset.creditYield, ' ', t("creditsUnit"), '</strong></a></div></section>',
+    asset ? '<a class="asset-float" href="#/studio"><small>' + t("creditYield") + '</small><strong>HAPW ' + escapeHtml(asset.tokenId) + ' · ' + asset.creditYield + ' ' + t("creditsUnit") + '</strong></a></div></section>' : '<a class="asset-float" href="#/bind"><small>' + t("realAssetsOnly") + '</small><strong>' + t("connectFirstPlatform") + ' →</strong></a></div></section>',
     '<section class="signal-strip" aria-label="', t("deskStatus"), '"><strong>', t("deskStatus"), '</strong><div class="signal-window"><div class="signal-track"><div class="signal-set">', signals, '</div><div class="signal-set" aria-hidden="true">', signals, '</div></div></div></section>',
     '<section class="system-flow five" aria-label="Clipli workflow"><a class="flow-node" href="#/works"><span class="flow-icon">W</span><b>HAPW</b><small>', t("studioFlow1"), '</small></a><span class="flow-arrow">→</span><a class="flow-node" href="#/studio"><span class="flow-icon">✓</span><b>', t("studioFlow2"), '</b><small>', t("feature2Desc"), '</small></a><span class="flow-arrow">→</span><a class="flow-node" href="#/studio"><span class="flow-icon">▶</span><b>', t("studioFlow3"), '</b><small>', t("generationCreditsLead"), '</small></a><span class="flow-arrow">→</span><a class="flow-node" href="#/clip"><span class="flow-icon">◎</span><b>', t("studioFlow4"), '</b><small>', t("feature3Desc"), '</small></a><span class="flow-arrow">→</span><a class="flow-node" href="#/assets"><span class="flow-icon">P</span><b>CLIP</b><small>', t("studioFlow5"), '</small></a></section>',
-    '<section class="home-insights"><div class="insight-chart"><div class="insight-head"><div><p class="eyebrow">ACTIVITY PULSE</p><h2>', t("pulseTitle"), '</h2><p>', t("pulseDesc"), '</p></div><strong>', data.counts.visible, '%</strong></div><svg class="home-chart" viewBox="0 0 420 150" role="img" aria-label="', t("pulseDesc"), '"><g class="chart-grid"><line x1="0" y1="30" x2="420" y2="30"></line><line x1="0" y1="75" x2="420" y2="75"></line><line x1="0" y1="120" x2="420" y2="120"></line></g><polyline points="0,112 70,96 140,103 210,64 280,75 350,37 420,28"></polyline><circle cx="420" cy="28" r="5"></circle></svg><div class="chart-legend"><span><i></i>', t("pulseAuthorized"), '</span><span><i></i>', t("pulseOverseas"), '</span><span><i></i>', t("pulseVisibility"), '</span></div></div><div class="insight-activity"><p class="eyebrow">LEDGER CHECK</p><h2>', t("activityTitle"), '</h2><p>', t("activityDesc"), '</p><div class="activity-list">', activityBars, '</div></div></section>',
-    '<section class="home-works"><header class="home-section-head"><div><p class="eyebrow">CURRENT SLATE</p><h2>', t("selectedWorks"), '</h2><p>', t("selectedLead"), '</p></div><a class="text-link" href="#/works">', t("viewAllWorks"), ' →</a></header><div class="work-rail">', workRail, '</div></section>',
+    '<section class="home-insights real-insights"><div class="insight-activity"><p class="eyebrow">LEDGER</p><h2>', t("activityTitle"), '</h2><p>', t("realAssetsOnly"), '</p><div class="activity-list">', activityBars, '</div></div></section>',
+    '<section class="home-works"><header class="home-section-head"><div><p class="eyebrow">CURRENT SLATE</p><h2>', t("selectedWorks"), '</h2><p>', t("selectedLead"), '</p></div><a class="text-link" href="#/works">', t("viewAllWorks"), ' →</a></header><div class="work-rail">', workRail || '<p class="empty-inline">' + t("noWorksYet") + '</p>', '</div></section>',
     '<section class="home-practice"><div class="practice-intro"><p class="eyebrow">', t("practiceEyebrow"), '</p><h2>', t("practiceTitle"), '</h2><p>', t("practiceLead"), '</p><div class="practice-links"><a class="text-link" href="#/studio">', t("openStudio"), ' →</a><a class="text-link" href="#/clip">', t("homeClipLink"), ' →</a></div></div><div class="practice-list">', practices, '</div></section>',
     '<section class="feature-band"><div class="feature-grid">', features, '</div></section>',
     '<section class="home-final"><div class="home-boundary"><div class="boundary-copy"><p class="eyebrow">OPERATING BOUNDARY</p><h2>', t("homeBoundaryTitle"), '</h2></div><p class="boundary-text">', t("homeBoundaryText"), '</p></div><div><h2 class="section-title">', t("releaseTitle"), '</h2><div class="steps">', steps, "</div></div></section>"
@@ -376,6 +352,8 @@ async function renderHome() {
 }
 
 async function renderWorks() {
+  const profile = await api('/api/profile');
+  if (profile.externalPlatform?.configured) return renderHaiwenWorks(profile);
   const works = await api("/api/works");
   const filtered = state.worksFilter === "featured" ? works.slice(0, 3) : works;
   const cards = filtered.map(work => [
@@ -385,7 +363,7 @@ async function renderWorks() {
     '<div class="work-meta"><span>', local(work, "creator"), '</span><span>', money(work.views), " ", t("views"), '</span></div><a class="text-link work-detail-link" href="#/work/', encodeURIComponent(work.id), '">', t("details"), ' →</a></div></article>'
   ].join("")).join("");
   const controls = '<div class="filter-row"><button class="filter-button ' + (state.worksFilter === "all" ? "active" : "") + '" data-filter="all">' + t("all") + '</button><button class="filter-button ' + (state.worksFilter === "featured" ? "active" : "") + '" data-filter="featured">' + t("featured") + "</button></div>";
-  shell(pageHead(t("worksEyebrow"), t("worksTitle"), t("worksLead"), controls) + '<section class="work-grid">' + cards + "</section>");
+  shell(pageHead(t("worksEyebrow"), t("worksTitle"), t("worksLead"), controls) + '<section class="work-grid">' + (cards || '<p class="empty-inline">' + t("noWorksYet") + '</p>') + "</section>");
   document.querySelectorAll("[data-filter]").forEach(button => button.addEventListener("click", () => { state.worksFilter = button.dataset.filter; renderWorks(); }));
   document.querySelectorAll("[data-detail]").forEach(card => {
     const openDetail = event => {
@@ -463,87 +441,11 @@ function openRedemptionConfirm(asset) {
     try {
       await api("/api/hapw/redemptions", { method: "POST", body: JSON.stringify({ assetId: asset.id, accepted: true, requestId: operationId("redeem") }) });
       close();
-      updateAssetGuide("redeem", "guideFeedbackRedeem");
       toast(t("redeemDone"));
       if (state.route === "/assets") renderAssets();
       else renderStudio();
     } catch (err) { toast(err.message, "error"); confirm.disabled = false; }
   });
-}
-
-async function renderAssets() {
-  const data = await api("/api/assets");
-  const pool = data.clip.dexPool;
-  const treasury = data.clip.treasury || data.clipTreasury || {};
-  const sources = data.assetSources || [];
-  const session = data.session || {};
-  const exchangePolicy = data.clip.hapwExchangePolicy || { dailyLimit: 2, usedToday: 0, remainingToday: 2, inventoryTotal: 0, inventoryAvailable: 0, reached: false };
-  const dailyLimitReached = exchangePolicy.reached || exchangePolicy.remainingToday <= 0;
-  const stats = [
-    [t("holdings"), data.stats.holdings, t("totalValue") + " " + t("yuan") + money(data.stats.totalValue)],
-    [t("redeemedCount"), data.hapwRedemptions.length, t("creditsGranted") + " " + money(data.generationAccount.lifetimeGranted)],
-    [t("generationJobs"), data.generations.length, t("creditsUsed") + " " + money(data.generationAccount.lifetimeUsed)],
-    [t("clipSpent"), data.generationAccount.lifetimeClipSpent, "CLIP"]
-  ].map(item => '<article class="stat-card"><span>' + item[0] + '</span><strong>' + String(item[1]).padStart(2, "0") + '</strong><small>' + item[2] + "</small></article>").join("");
-  const rows = data.transfers.map(transfer => {
-    const asset = data.assets.find(item => item.id === transfer.assetId);
-    const pending = ["pending", "awaitingSignature"].includes(transfer.statusCode);
-    return '<tr><td>HAPW ' + (asset ? escapeHtml(asset.tokenId) : "") + " · " + (asset ? local(asset, "name") : "") + '</td><td>' + transferDirectionLabel(transfer) + '</td><td>¥ ' + money(transfer.value) + '</td><td><span class="status ' + (pending ? "pending" : "") + '">' + statusLabel(transfer) + "</span></td><td>" + escapeHtml(transfer.createdAt) + "</td></tr>";
-  }).join("");
-  const clipRows = data.clipTransactions.map(transaction => '<tr><td>' + transactionTypeLabel(transaction) + '</td><td>' + local(transaction, "counterparty") + '</td><td class="amount ' + (transaction.amount >= 0 ? "in" : "out") + '">' + (transaction.amount >= 0 ? "+" : "") + money(transaction.amount) + ' CLIP</td><td>' + escapeHtml(transaction.txHash) + '</td><td>' + escapeHtml(transaction.createdAt) + '</td></tr>').join("");
-  const generationRows = data.generations.map(item => {
-    const asset = data.assets.find(assetItem => assetItem.id === item.assetId);
-    return '<tr><td>' + local(item, "title") + '</td><td>HAPW ' + (asset ? escapeHtml(asset.tokenId) : "") + '</td><td>' + item.creditsUsed + ' ' + t("creditsUnit") + '</td><td class="amount out">-' + item.clipCost + ' CLIP</td><td>' + money(item.validViews) + '</td><td>' + statusLabel(item) + '</td><td>' + escapeHtml(item.createdAt) + '</td></tr>';
-  }).join("");
-  const reserveRows = data.assets.filter(item => item.clipPrice > 0).map(asset => {
-    const fee = Math.ceil(asset.clipPrice * data.clip.hapwExchangeFeeRate);
-    const unavailableLabel = asset.exchangeAvailable ? (dailyLimitReached ? t("reserveDailyLimit") : t("exchangeToHapw")) : t("reserveClaimed");
-    return '<article class="reserve-row"><div><small>HAPW ' + escapeHtml(asset.tokenId) + '</small><h3>' + local(asset, "name") + '</h3><p>' + local(asset, "authorizationScope") + '</p></div><dl><div><dt>' + t("reservePrice") + '</dt><dd>' + money(asset.clipPrice) + ' CLIP</dd></div><div><dt>' + t("exchangeFee") + '</dt><dd>' + money(fee) + ' CLIP · 5%</dd></div></dl><button class="button secondary" type="button" data-hapw-exchange="' + escapeHtml(asset.id) + '" ' + (asset.exchangeAvailable && !dailyLimitReached ? "" : "disabled") + '>' + unavailableLabel + '</button></article>';
-  }).join("");
-  const redeemableAsset = data.assets.find(asset => asset.redemptionStatus === "available");
-  const reserveAsset = data.assets
-    .filter(asset => asset.exchangeAvailable && asset.clipPrice > 0)
-    .sort((first, second) => first.clipPrice - second.clipPrice)[0];
-  const reserveTotal = reserveAsset
-    ? reserveAsset.clipPrice + Math.ceil(reserveAsset.clipPrice * data.clip.hapwExchangeFeeRate)
-    : 0;
-  const guideDoneCount = Object.values(state.assetGuide).filter(Boolean).length;
-  const guideFeedbackKey = state.assetGuideFeedbackKey
-    || (guideDoneCount === 3 ? "guideFeedbackAll" : guideDoneCount > 0 ? "guideFeedbackContinue" : "guideFeedbackIdle");
-  const guideSteps = [
-    '<article class="asset-guide-step ' + (state.assetGuide.redeem ? "is-done" : "") + '"><div class="guide-step-meta"><span>01</span><b>' + t(state.assetGuide.redeem ? "guideStatusDone" : "guideStatusReady") + '</b></div><div class="guide-route" aria-hidden="true"><span>W</span><i>→</i><span>P</span></div><h3>' + t("guide1Title") + '</h3><p>' + t("guide1Desc") + '</p><div class="guide-step-action"><small>' + t("guide1Quote") + '</small><strong>' + (redeemableAsset ? redeemableAsset.creditYield + ' ' + t("creditsUnit") + ' + ' + Math.floor(redeemableAsset.creditYield * data.generationAccount.clipGrantPerCredit) + ' CLIP' : t("guide1Unavailable")) + '</strong><button class="button primary" type="button" data-guide-redeem ' + (redeemableAsset ? "" : "disabled") + '><span class="button-icon">✓</span>' + t("guide1Action") + '</button></div></article>',
-    '<article class="asset-guide-step ' + (state.assetGuide.exchange ? "is-done" : "") + '"><div class="guide-step-meta"><span>02</span><b>' + t(state.assetGuide.exchange ? "guideStatusDone" : "guideStatusReady") + '</b></div><div class="guide-route" aria-hidden="true"><span>P</span><i>→</i><span>W</span></div><h3>' + t("guide2Title") + '</h3><p>' + t("guide2Desc") + '</p><div class="guide-step-action"><small>' + t("guide2Quote") + '</small><strong>' + (dailyLimitReached ? t("guide2DailyLimit") : reserveAsset ? money(reserveTotal) + ' CLIP · ' + escapeHtml(reserveAsset.tokenId) : t("guide2Unavailable")) + '</strong><button class="button secondary" type="button" data-guide-exchange ' + (reserveAsset && !dailyLimitReached ? "" : "disabled") + '><span class="button-icon">⇄</span>' + (dailyLimitReached ? t("reserveDailyLimit") : t("guide2Action")) + '</button></div></article>',
-    '<article class="asset-guide-step ' + (state.assetGuide.dex ? "is-done" : "") + '"><div class="guide-step-meta"><span>03</span><b>' + t(state.assetGuide.dex ? "guideStatusHandoff" : "guideStatusReady") + '</b></div><div class="guide-route" aria-hidden="true"><span>P</span><i>→</i><span>$</span></div><h3>' + t("guide3Title") + '</h3><p>' + t("guide3Desc") + '</p><div class="guide-step-action"><small>' + t("guide3Quote") + '</small><strong>1 CLIP ≈ ' + pool.usdtPerClip.toFixed(3) + ' USDT</strong><button class="button" type="button" data-dex-handoff><span class="button-icon">↗</span>' + t("guide3Action") + '</button></div></article>'
-  ].join("");
-  const guide = '<section class="asset-guide" aria-labelledby="asset-guide-title"><header><div><p class="eyebrow">FIRST RUN</p><h2 id="asset-guide-title">' + t("assetGuideTitle") + '</h2><p>' + t("assetGuideLead") + '</p></div><div class="guide-progress"><strong>' + guideDoneCount + '/3</strong><span>' + t("assetGuideProgress") + '</span><button class="text-link text-button" type="button" data-guide-reset><span aria-hidden="true">↻</span>' + t("assetGuideReset") + '</button></div></header><div class="asset-guide-track">' + guideSteps + '</div><footer class="guide-feedback" aria-live="polite"><span aria-hidden="true">◆</span><p>' + t(guideFeedbackKey) + '</p></footer></section>';
-  const sourceRows = sources.map(source => '<li><span class="source-status ' + escapeHtml(source.status) + '"></span><div><strong>' + escapeHtml(source.name) + '</strong><small>' + escapeHtml(source.mode) + ' · ' + escapeHtml(source.status) + '</small></div><b>' + source.assetCount + '</b></li>').join("");
-  const conservation = treasury.mintedSupply && treasury.treasuryBalance + treasury.liquidityAllocation + treasury.ledgerOutstanding === treasury.mintedSupply;
-  const integrity = '<section class="asset-integrity-grid"><article class="integrity-panel source-panel"><header><div><p class="eyebrow">EXTERNAL SNAPSHOT</p><h2>' + t("externalAssetData") + '</h2></div><span class="integrity-badge">' + sources.length + ' ' + t("sourceCount") + '</span></header><p>' + t("externalAssetDataLead") + '</p><ul class="source-list">' + sourceRows + '</ul><footer><span>' + t("sourceOfTruth") + '</span><strong>' + t("externalPlatform") + '</strong></footer></article><article class="integrity-panel treasury-panel"><header><div><p class="eyebrow">CLIP TREASURY</p><h2>' + t("centralTreasury") + '</h2></div><span class="integrity-badge ' + (conservation ? "is-good" : "") + '">' + (conservation ? t("conserved") : t("checkLedger")) + '</span></header><p>' + t("centralTreasuryLead") + '</p><dl class="treasury-grid"><div><dt>' + t("oneTimeMint") + '</dt><dd>' + money(treasury.mintedSupply || 0) + ' CLIP</dd></div><div><dt>' + t("treasuryAvailable") + '</dt><dd>' + money(treasury.treasuryBalance || 0) + '</dd></div><div><dt>' + t("liquidityAllocation") + '</dt><dd>' + money(treasury.liquidityAllocation || 0) + '</dd></div><div><dt>' + t("ledgerOutstanding") + '</dt><dd>' + money(treasury.ledgerOutstanding || 0) + '</dd></div></dl><footer><span>' + t("sessionMode") + '</span><strong>' + (session.identityVerification === false ? t("anonymousSession") : t("identityRequired")) + '</strong></footer></article></section>';
-  const actions = '<div class="filter-row"><a class="button primary" href="#/studio">' + t("openStudio") + '</a><a class="button" href="#/transfer">' + t("transferAsset") + "</a></div>";
-  shell([
-    pageHead(t("assetsEyebrow"), t("assetsTitle"), t("assetsLead"), actions),
-    guide,
-    '<section class="ledger-grid three"><article class="token-card hapw-card"><div class="token-heading"><span class="token-mark">W</span><div><p class="eyebrow">HAPW</p><h2>', t("hapwHoldings"), '</h2></div></div><p>', t("hapwLead"), '</p><div class="token-number">', data.stats.holdings, '<small> ', t("holdings"), '</small></div><div class="token-foot"><span>', t("redeemedCount"), '</span><strong>', data.hapwRedemptions.length, '</strong></div></article>',
-    '<article class="token-card credit-card"><div class="token-heading"><span class="token-mark">C</span><div><p class="eyebrow">CREATION CREDITS</p><h2>', t("generationCredits"), '</h2></div></div><p>', t("generationCreditsLead"), '</p><div class="token-number">', money(data.generationAccount.balance), '<small> ', t("creditsUnit"), '</small></div><div class="token-foot"><span>', t("creditsUsed"), '</span><strong>', money(data.generationAccount.lifetimeUsed), '</strong></div></article>',
-    '<article class="token-card clip-card"><div class="token-heading"><span class="token-mark">P</span><div><p class="eyebrow">CLIP</p><h2>', t("clipBalance"), '</h2></div></div><p>', t("clipLead"), '</p><div class="token-number">', money(data.clip.balance), '<small> CLIP</small></div><div class="dex-mini"><span>', t("indicativeRate"), '</span><strong>1 USDT ≈ ', pool.clipPerUsdt.toFixed(2), ' CLIP</strong><small>', t("poolLiquidity"), ' · ', money(pool.totalLiquidityUsdt), ' USDT</small></div><div class="token-foot"><a class="text-link" href="#/clip">', t("mechanismDetails"), ' →</a><button class="button secondary" type="button" data-dex-handoff>', t("dexButton"), ' ↗</button></div></article></section>',
-    integrity,
-    '<section class="stat-grid four">', stats, '</section>',
-    '<section class="reserve-section" id="hapw-reserve"><header><div><p class="eyebrow">CLIP → HAPW</p><h2>', t("reserveTitle"), '</h2><p>', t("reserveLead"), '</p></div><div class="reserve-policy"><span class="fee-badge">5% ', t("exchangeFee"), '</span><span class="daily-limit"><strong>', exchangePolicy.remainingToday, '/', exchangePolicy.dailyLimit, '</strong><small>', t("dailyRemaining"), '</small></span><span class="inventory-limit"><strong>', exchangePolicy.inventoryAvailable, '/', exchangePolicy.inventoryTotal, '</strong><small>', t("reserveAvailable"), '</small></span></div></header><div class="reserve-list">', reserveRows, '</div></section>',
-    '<section class="data-section"><div class="data-head"><h2>', t("generationHistory"), '</h2><a class="text-link" href="#/studio">', t("openStudio"), ' →</a></div><div class="table-wrap"><table><thead><tr><th>', t("video"), '</th><th>HAPW</th><th>', t("creditsCost"), '</th><th>', t("clipCost"), '</th><th>', t("observedViews"), '</th><th>', t("status"), '</th><th>', t("date"), '</th></tr></thead><tbody>', generationRows, '</tbody></table></div></section>',
-    '<section class="data-section"><div class="data-head"><h2>', t("recentTransfers"), '</h2><a class="text-link" href="#/transfer">', t("transferAsset"), ' →</a></div><div class="table-wrap"><table><thead><tr><th>', t("asset"), '</th><th>', t("exerciseTarget"), '</th><th>', t("value"), '</th><th>', t("status"), '</th><th>', t("date"), '</th></tr></thead><tbody>', rows, '</tbody></table></div></section>',
-    '<section class="data-section"><div class="data-head"><div><h2>', t("clipHistory"), '</h2><p class="table-note">', t("clipAcquisitionSummary"), '</p></div><button class="text-link text-button" type="button" data-dex-handoff>', t("dexButton"), ' ↗</button></div><div class="table-wrap"><table><thead><tr><th>', t("txType"), '</th><th>', t("txAsset"), '</th><th>', t("amount"), '</th><th>', t("txHash"), '</th><th>', t("date"), '</th></tr></thead><tbody>', clipRows, '</tbody></table></div></section>'
-  ].join(""));
-  const guideRedeem = document.querySelector("[data-guide-redeem]");
-  if (guideRedeem && redeemableAsset) guideRedeem.addEventListener("click", () => openRedemptionConfirm(redeemableAsset));
-  const guideExchange = document.querySelector("[data-guide-exchange]");
-  if (guideExchange && reserveAsset && !dailyLimitReached) guideExchange.addEventListener("click", () => openHapwExchangeConfirm(reserveAsset, data.clip.hapwExchangeFeeRate, exchangePolicy));
-  document.querySelectorAll("[data-dex-handoff]").forEach(button => button.addEventListener("click", () => openDexHandoff(data.clip)));
-  const guideReset = document.querySelector("[data-guide-reset]");
-  if (guideReset) guideReset.addEventListener("click", () => { resetAssetGuide(); renderAssets(); });
-  document.querySelectorAll("[data-hapw-exchange]").forEach(button => button.addEventListener("click", () => {
-    const asset = data.assets.find(item => item.id === button.dataset.hapwExchange);
-    if (asset && !dailyLimitReached) openHapwExchangeConfirm(asset, data.clip.hapwExchangeFeeRate, exchangePolicy);
-  }));
 }
 
 function openHapwExchangeConfirm(asset, feeRate, exchangePolicy) {
@@ -560,39 +462,14 @@ function openHapwExchangeConfirm(asset, feeRate, exchangePolicy) {
     button.disabled = true;
     try {
       await api("/api/clip/hapw-exchanges", { method: "POST", body: JSON.stringify({ assetId: asset.id, accepted: document.getElementById("hapw-exchange-accepted").checked, requestId: operationId("hapw-exchange") }) });
-      updateAssetGuide("exchange", "guideFeedbackExchange");
       close(); toast(t("hapwExchangeDone")); renderAssets();
     } catch (err) { toast(err.message, "error"); button.disabled = false; }
   });
 }
 
-function openDexHandoff(clip) {
-  const pool = clip.dexPool;
-  modalRoot.innerHTML = [
-    '<div class="modal-backdrop"><section class="modal confirm-modal dex-handoff-modal" role="dialog" aria-modal="true" aria-labelledby="dex-handoff-title">',
-    '<div class="confirm-mark">P</div><div class="confirm-content"><p class="eyebrow">CLIP → USDT</p><h2 id="dex-handoff-title">', t("dexHandoffTitle"), '</h2><p>', t("dexHandoffLead"), '</p>',
-    '<div class="handoff-route" aria-label="CLIP to USDT"><span>CLIP</span><i>→</i><span>DEX</span><i>→</i><span>USDT</span></div>',
-    '<dl class="confirm-summary"><div><dt>', t("dexAvailableBalance"), '</dt><dd>', money(clip.balance), ' CLIP</dd></div><div><dt>', t("indicativeRate"), '</dt><dd>1 CLIP ≈ ', pool.usdtPerClip.toFixed(3), ' USDT</dd></div><div><dt>', t("poolLiquidity"), '</dt><dd>', money(pool.clipReserve), ' CLIP + ', money(pool.usdtReserve), ' USDT</dd></div><div><dt>', t("snapshotTime"), '</dt><dd>', escapeHtml(pool.updatedAt), '</dd></div></dl>',
-    '<ol class="handoff-checklist"><li><b>1</b><span>', t("dexHandoffStep1"), '</span></li><li><b>2</b><span>', t("dexHandoffStep2"), '</span></li><li><b>3</b><span>', t("dexHandoffStep3"), '</span></li></ol>',
-    '<p class="handoff-notice">', t("dexHandoffNotice"), '</p><div class="confirm-actions"><button class="button" id="dex-handoff-cancel" type="button">', t("cancel"), '</button><a class="button primary" id="dex-handoff-open" href="', safeExternalUrl(clip.dexUrl), '" target="_blank" rel="noopener noreferrer"><span class="button-icon">↗</span>', t("dexHandoffOpen"), '</a></div></div></section></div>'
-  ].join("");
-  const close = () => { modalRoot.innerHTML = ""; };
-  document.getElementById("dex-handoff-cancel").addEventListener("click", close);
-  modalRoot.querySelector(".modal-backdrop").addEventListener("click", event => { if (event.target.classList.contains("modal-backdrop")) close(); });
-  const open = document.getElementById("dex-handoff-open");
-  open.focus();
-  open.addEventListener("click", () => {
-    updateAssetGuide("dex", "guideFeedbackDex");
-    setTimeout(() => {
-      close();
-      toast(t("dexHandoffStarted"));
-      if (state.route === "/assets") renderAssets();
-    }, 0);
-  });
-}
-
 async function renderStudio() {
   const data = await api("/api/studio");
+  data.clip.balance = data.clip.availableBalance ?? data.clip.balance;
   const activeRedemptions = data.redemptions.filter(item => item.status === "有效" && item.creditsRemaining > 0);
   const eligibleAssets = activeRedemptions.map(item => data.assets.find(asset => asset.id === item.assetId)).filter(Boolean);
   if (!eligibleAssets.some(item => item.id === state.selectedAsset)) state.selectedAsset = eligibleAssets[0] ? eligibleAssets[0].id : "";
@@ -624,9 +501,9 @@ async function renderStudio() {
     '<section class="operation-note"><strong>', t("operationNoteTitle"), '</strong><p>', t("operationNoteText"), '</p><a class="text-link" href="#/transfer">', t("assetExerciseLink"), ' →</a></section>',
     '<section class="studio-flow"><header><p class="eyebrow">WORKFLOW</p><h2>', t("studioFlowTitle"), '</h2></header><div>', flow, '</div></section>',
     '<section class="studio-stats">', stats, '</section>',
-    '<section class="studio-materials"><header><h2>', t("redeemTitle"), '</h2><p>', t("redeemLead"), '</p></header><div class="material-list">', materialRows, '</div></section>',
+    '<section class="studio-materials"><header><h2>', t("redeemTitle"), '</h2><p>', t("redeemLead"), '</p></header><div class="material-list">', materialRows || assetEmptyState(), '</div></section>',
     '<section class="studio-generator"><div class="generator-copy"><p class="eyebrow">AI VIDEO</p><h2>', t("generateTitle"), '</h2><p>', t("generateLead"), '</p><div class="formula-mini"><span>', t("creditFormula"), '</span><small>', t("dualCostFormulaDesc"), '</small></div></div><form id="generation-form" class="generator-form"><label class="field"><span>', t("eligibleMaterial"), '</span><select name="assetId" ', eligibleAssets.length ? "" : "disabled", '>', assetOptions, '</select></label><div class="field"><span class="field-label">', t("videoDuration"), '</span><div class="segmented">', durations, '</div></div><div class="field"><span class="field-label">', t("quality"), '</span><div class="segmented two">', qualities, '</div></div><div class="generation-cost"><span>', t("costEstimate"), '</span><strong>', estimatedCost, ' ', t("creditsUnit"), ' + ', estimatedClipCost, ' CLIP</strong><small>', selectedRedemption ? selectedRedemption.creditsRemaining + ' ' + t("creditsAvailable") + ' · ' + money(data.clip.balance) + ' CLIP' : t("noRedeemedAssets"), '</small></div><label class="check"><input name="accepted" type="checkbox"><span>', t("acceptGeneration"), '</span></label><button class="button primary wide" type="submit" ', eligibleAssets.length ? "" : "disabled", '>', t("generateAction"), '</button></form></section>',
-    '<section class="data-section studio-history"><div class="data-head"><h2>', t("generationHistory"), '</h2><a class="text-link" href="#/clip">', t("mechanismDetails"), ' →</a></div><div class="table-wrap"><table><thead><tr><th>', t("video"), '</th><th>HAPW</th><th>', t("creditsCost"), '</th><th>', t("clipCost"), '</th><th>', t("observedViews"), '</th><th>', t("status"), '</th><th>', t("date"), '</th></tr></thead><tbody>', history, '</tbody></table></div></section></div>'
+    '<section class="data-section studio-history"><div class="data-head"><h2>', t("generationHistory"), '</h2><a class="text-link" href="#/clip">', t("mechanismDetails"), ' →</a></div><div class="table-wrap"><table><thead><tr><th>', t("video"), '</th><th>HAPW</th><th>', t("creditsCost"), '</th><th>', t("clipCost"), '</th><th>', t("observedViews"), '</th><th>', t("status"), '</th><th>', t("date"), '</th></tr></thead><tbody>', history || emptyTableRow(7), '</tbody></table></div></section></div>'
   ].join(""));
   document.querySelectorAll("[data-redeem]").forEach(button => button.addEventListener("click", () => {
     const asset = data.assets.find(item => item.id === button.dataset.redeem);
@@ -651,10 +528,11 @@ async function renderStudio() {
 async function renderClip() {
   const data = await api("/api/assets");
   const clip = data.clip;
+  clip.balance = clip.availableBalance ?? clip.balance;
   const pool = clip.dexPool;
   const treasury = clip.treasury || data.clipTreasury || {};
   const exchangePolicy = clip.hapwExchangePolicy || { dailyLimit: 2, usedToday: 0, remainingToday: 2, inventoryTotal: 0, inventoryAvailable: 0 };
-  const metrics = [["clipMetricHoldings", data.stats.holdings], ["clipMetricCredits", money(data.generationAccount.balance)], ["clipMetricGrantRate", "0.40 CLIP"], ["clipMetricCostRate", "0.20 CLIP"], ["clipMetricDexRate", pool.clipPerUsdt.toFixed(2) + " CLIP"], ["clipMetricBalance", money(clip.balance) + " CLIP"], ["oneTimeMint", money(treasury.mintedSupply || 0) + " CLIP"], ["treasuryAvailable", money(treasury.treasuryBalance || 0) + " CLIP"]].map(item => '<div class="clip-metric"><small>' + t(item[0]) + '</small><strong>' + item[1] + '</strong></div>').join("");
+  const metrics = [["clipMetricHoldings", data.stats.holdings], ["clipMetricCredits", money(data.generationAccount.balance)], ["clipMetricGrantRate", "0.40 CLIP"], ["clipMetricCostRate", "0.20 CLIP"], ["clipMetricDexRate", pool.clipReserve > 0 ? pool.clipPerUsdt.toFixed(2) + " CLIP" : "—"], ["clipMetricBalance", money(clip.balance) + " CLIP"], ["oneTimeMint", money(treasury.mintedSupply || 0) + " CLIP"], ["treasuryAvailable", money(treasury.treasuryBalance || 0) + " CLIP"]].map(item => '<div class="clip-metric"><small>' + t(item[0]) + '</small><strong>' + item[1] + '</strong></div>').join("");
   const treasurySection = '<section class="treasury-section"><header><div><p class="eyebrow">CENTRAL LEDGER</p><h2>' + t("centralTreasury") + '</h2><p>' + t("centralTreasuryLead") + '</p></div><span class="integrity-badge is-good">' + t("noFurtherMint") + '</span></header><div class="treasury-ledger"><div><small>' + t("oneTimeMint") + '</small><strong>' + money(treasury.mintedSupply || 0) + ' CLIP</strong></div><div><small>' + t("treasuryAvailable") + '</small><strong>' + money(treasury.treasuryBalance || 0) + ' CLIP</strong></div><div><small>' + t("liquidityAllocation") + '</small><strong>' + money(treasury.liquidityAllocation || 0) + ' CLIP</strong></div><div><small>' + t("ledgerOutstanding") + '</small><strong>' + money(treasury.ledgerOutstanding || 0) + ' CLIP</strong></div></div><p class="treasury-note">' + t("centralTreasuryNote") + '</p></section>';
   const plays = [["clipPlay1Title", "clipPlay1Desc"], ["clipPlay2Title", "clipPlay2Desc"], ["clipPlay3Title", "clipPlay3Desc"], ["clipPlay4Title", "clipPlay4Desc"]].map((item, index) => '<article class="clip-play"><span>' + (index + 1) + '</span><div><h3>' + t(item[0]) + '</h3><p>' + t(item[1]) + '</p></div></article>').join("");
   const flow = [["01", "clipFlowHold", "clipFlowHoldDesc"], ["02", "clipFlowRedeem", "clipFlowRedeemDesc"], ["03", "clipFlowGrant", "clipFlowGrantDesc"], ["04", "clipFlowGenerate", "clipFlowGenerateDesc"]].map(item => [
@@ -667,7 +545,7 @@ async function renderClip() {
   shell([
     '<div class="clip-page"><a class="back-link" href="#/assets">← ', t("backAssets"), '</a>',
     '<section class="clip-hero"><div><p class="eyebrow">', t("clipPageEyebrow"), '</p><h1>', t("clipPageTitle"), '</h1><p class="lede">', t("clipPageLead"), '</p><div class="hero-actions"><a class="button primary" href="#/studio">', t("openStudio"), ' →</a><a class="button" href="', safeExternalUrl(clip.dexUrl), '" target="_blank" rel="noopener noreferrer">', t("dexButton"), ' ↗</a></div></div>',
-    '<aside class="clip-balance-sheet"><span class="sheet-mark">P</span><p>', t("clipCurrentBalance"), '</p><strong>', money(clip.balance), ' <small>CLIP</small></strong><dl><div><dt>', t("generationCredits"), '</dt><dd>', money(data.generationAccount.balance), ' ', t("creditsUnit"), '</dd></div><div><dt>', t("indicativeRate"), '</dt><dd>1 USDT ≈ ', pool.clipPerUsdt.toFixed(2), ' CLIP</dd></div><div><dt>', t("poolLiquidity"), '</dt><dd>', money(pool.clipReserve), ' CLIP + ', money(pool.usdtReserve), ' USDT</dd></div><div><dt>', t("snapshotTime"), '</dt><dd>', escapeHtml(pool.updatedAt), '</dd></div></dl></aside></section>',
+    '<aside class="clip-balance-sheet"><span class="sheet-mark">P</span><p>', t("clipCurrentBalance"), '</p><strong>', money(clip.balance), ' <small>CLIP</small></strong><dl><div><dt>', t("generationCredits"), '</dt><dd>', money(data.generationAccount.balance), ' ', t("creditsUnit"), '</dd></div><div><dt>', t("indicativeRate"), '</dt><dd>1 USDT ≈ ', pool.clipReserve > 0 ? pool.clipPerUsdt.toFixed(2) : '—', ' CLIP</dd></div><div><dt>', t("poolLiquidity"), '</dt><dd>', money(pool.clipReserve), ' CLIP + ', money(pool.usdtReserve), ' USDT</dd></div><div><dt>', t("snapshotTime"), '</dt><dd>', escapeHtml(pool.updatedAt || '—'), '</dd></div></dl></aside></section>',
     '<section class="mechanism-section"><header class="home-section-head"><div><p class="eyebrow">FLOW</p><h2>', t("clipMechanismTitle"), '</h2></div></header><div class="mechanism-flow">', flow, '</div></section>',
     '<section class="clip-numbers"><header><p class="eyebrow">LEDGER SNAPSHOT</p><h2>', t("clipNumbersTitle"), '</h2><p>', t("clipNumbersLead"), '</p></header><div class="clip-metrics">', metrics, '</div></section>',
     treasurySection,
@@ -679,10 +557,17 @@ async function renderClip() {
     '<section class="policy-section"><header><p class="eyebrow">POLICY NOTE</p><h2>', t("clipPolicyTitle"), '</h2></header><div class="policy-ledger">', policies, '</div></section>',
     '<section class="clip-warning"><span>!</span><p>', t("clipDemoNotice"), '</p></section></div>'
   ].join(""));
+  if (!pool.clipReserve || !clip.dexUrl) {
+    document.querySelectorAll('.clip-page a[target="_blank"]').forEach(link => {
+      const label = document.createElement('span'); label.className = 'notice'; label.textContent = t('marketUnavailable'); link.replaceWith(label);
+    });
+    document.querySelectorAll('.pool-snapshot, .exchange-steps').forEach(section => { section.innerHTML = '<p class="notice">' + t('marketUnavailable') + '</p>'; });
+  }
+
 }
 
 function assetOptions(assets) {
-  if (!state.selectedAsset) {
+  if (!assets.some(item => item.id === state.selectedAsset && item.transferable)) {
     const available = assets.find(item => item.transferable);
     state.selectedAsset = available ? available.id : "";
   }
@@ -694,6 +579,7 @@ function assetOptions(assets) {
 
 async function renderConvert() {
   const data = await api("/api/assets");
+  if (!data.assets.some(item => item.transferable)) { shell(pageHead(t("convertEyebrow"), t("convertTitle"), t("convertLead")) + assetEmptyState("noEligibleAssets")); return; }
   const options = assetOptions(data.assets);
   const regions = '<option value="sea">' + t("regionSea") + '</option><option value="europe">' + t("regionEurope") + '</option><option value="global">' + t("regionGlobal") + "</option>";
   const durations = [30, 90, 180].map(day => '<button type="button" class="segment ' + (state.conversionDays === day ? "active" : "") + '" data-days="' + day + '">' + day + " " + t("day") + "</button>").join("");
@@ -723,6 +609,7 @@ async function renderConvert() {
 async function renderTransfer() {
   const data = await api("/api/assets");
   const available = data.assets.filter(item => item.transferable);
+  if (!available.length) { shell(pageHead(t("transferEyebrow"), t("transferTitle"), t("transferLead")) + assetEmptyState("noEligibleAssets")); return; }
   if (!state.selectedAsset || !available.some(item => item.id === state.selectedAsset)) state.selectedAsset = available[0] ? available[0].id : "";
   if (!data.platforms.some(item => item.code === state.selectedPlatform)) state.selectedPlatform = data.platforms[0].code;
   const selected = available.find(item => item.id === state.selectedAsset);
@@ -754,28 +641,6 @@ async function renderTransfer() {
   });
 }
 
-async function renderBind() {
-  const profile = await api("/api/profile");
-  const accountRow = profile.overseasAccount
-    ? '<div class="account-row"><span class="account-icon">H</span><div><h3>' + t("overseasAccount") + '</h3><p>' + t("authorizedAccount") + " · " + escapeHtml(profile.overseasAccount) + '</p></div><button class="button danger" id="unbind" type="button">' + t("unbind") + "</button></div>"
-    : '<form id="bind-form" class="form-grid"><label class="field"><span>' + t("overseasAccount") + '</span><input type="text" name="account" placeholder="' + t("accountPlaceholder") + '"></label><button class="button primary" type="submit">' + t("bindAction") + "</button></form>";
-  shell([
-    '<div class="account-shell"><section class="account-card">', pageHead(t("bindEyebrow"), t("bindTitle"), t("bindLead")),
-    '<div class="account-content">', accountRow,
-    '<div class="account-row"><span class="account-icon">☎</span><div><h3>', t("phone"), '</h3><p>', escapeHtml(profile.phone), '</p></div><span class="status">', t("enabled"), '</span></div>',
-    '<div class="benefit"><div class="benefit-head"><div><small>HWF LEVEL ', profile.level, '</small><h2>', t("benefits"), '</h2></div><strong>', money(profile.points), ' <small>', t("points"),
-    '</small></strong></div><div class="benefit-grid"><div>', t("priority"), '</div><div>', t("discount"), '</div><div>', t("quota"), "</div></div></div></div></section></div>"
-  ].join(""));
-  const unbind = document.getElementById("unbind");
-  if (unbind) unbind.addEventListener("click", async () => { await api("/api/profile/overseas", { method: "DELETE" }); toast(t("success")); renderBind(); });
-  const bindForm = document.getElementById("bind-form");
-  if (bindForm) bindForm.addEventListener("submit", async event => {
-    event.preventDefault();
-    try { await api("/api/profile/overseas", { method: "POST", body: JSON.stringify({ account: event.currentTarget.account.value }) }); toast(t("success")); renderBind(); }
-    catch (err) { toast(err.message, "error"); }
-  });
-}
-
 async function renderWallet() {
   const profile = await api("/api/profile");
   const wallets = [
@@ -786,8 +651,8 @@ async function renderWallet() {
   ];
   if (!state.selectedWallet && profile.walletProvider) state.selectedWallet = profile.walletProvider;
   const rows = wallets.map(wallet => [
-    '<button class="wallet-row ', state.selectedWallet === wallet[0] ? "selected" : "", '" type="button" data-wallet="', wallet[0], '"><span class="wallet-logo">', wallet[1],
-    '</span><span><strong>', wallet[0], '</strong><small>', t(wallet[2]), '</small></span><span>', profile.walletProvider === wallet[0] ? t("connected") : "→", "</span></button>"
+    '<button class="wallet-row ', state.selectedWallet === wallet[0] ? "selected" : "", '" type="button" ', injectedWallet(wallet[0]) ? '' : 'disabled', ' data-wallet="', wallet[0], '"><span class="wallet-logo">', wallet[1],
+    '</span><span><strong>', wallet[0], '</strong><small>', t(injectedWallet(wallet[0]) ? wallet[2] : 'walletProviderUnavailable'), '</small></span><span>', profile.walletProvider === wallet[0] && profile.wallet ? t("connected") : "→", "</span></button>"
   ].join("")).join("");
   const connected = Boolean(profile.wallet && profile.walletStatus === "connected");
   const address = connected ? escapeHtml(profile.wallet) : t("walletNotConnected");
@@ -800,24 +665,24 @@ async function renderWallet() {
     '<div class="account-shell"><section class="account-card">', pageHead(t("walletEyebrow"), t("walletTitle"), t("walletLead")),
     '<div class="account-content"><div class="wallet-list">', rows, '</div><div class="wallet-actions"><button class="button primary" id="connect-wallet" type="button">', connected ? t("connected") : t("connectSelected"), '</button><button class="button" id="disconnect-wallet" type="button" ', connected ? "" : "disabled", '>', t("disconnectWallet"), '</button></div>', walletSummary, walletAssetsSection, airdropsSection, '</div></section></div>'
   ].join(""));
-  if (window.ethereum && typeof window.ethereum.on === "function" && !window.__clipliWalletEventsBound) {
-    const refreshConnectedWallet = () => { if (state.route === "/wallet") renderWallet(); };
-    window.ethereum.on("accountsChanged", refreshConnectedWallet);
-    window.ethereum.on("chainChanged", refreshConnectedWallet);
-    window.__clipliWalletEventsBound = true;
-  }
+  if (connected) watchWallet(injectedWallet(profile.walletProvider), profile.walletProvider);
   document.querySelectorAll("[data-wallet]").forEach(button => button.addEventListener("click", () => { state.selectedWallet = button.dataset.wallet; renderWallet(); }));
   document.getElementById("connect-wallet").addEventListener("click", async event => {
     if (!state.selectedWallet) return toast(t("chooseWallet"), "error");
     event.currentTarget.disabled = true;
     try {
-      const provider = window.ethereum;
+      const provider = injectedWallet(state.selectedWallet);
       if (!provider || typeof provider.request !== "function") throw new Error(t("walletProviderUnavailable"));
       const accounts = await provider.request({ method: "eth_requestAccounts" });
       const addressValue = Array.isArray(accounts) && accounts[0];
       if (!addressValue) throw new Error(t("walletAddressUnavailable"));
-      const chainId = await provider.request({ method: "eth_chainId" });
+      let chainId = await provider.request({ method: "eth_chainId" });
+      if (chainId !== '0x38') {
+        await provider.request({method: 'wallet_switchEthereumChain', params: [{chainId: '0x38'}]});
+        chainId = await provider.request({method: 'eth_chainId'});
+      }
       await api("/api/v1/wallet/connect", { method: "POST", body: JSON.stringify({ provider: state.selectedWallet, address: addressValue, chainId }) });
+      watchWallet(provider, state.selectedWallet);
       toast(t("connected")); renderWallet();
     }
     catch (err) { toast(err.message, "error"); event.currentTarget.disabled = false; }
@@ -837,7 +702,7 @@ async function renderSecurity() {
     '<div class="setting-row"><div><h3>', t(item[1]), '</h3><p>', t(item[2]), '</p></div><button class="toggle" type="button" role="switch" data-setting="', item[0],
     '" aria-checked="', profile.settings[item[0]], '" aria-label="', t(item[1]), '"></button></div>'
   ].join("")).join("");
-  const overseas = '<div class="setting-row"><div><h3>' + t("overseasAccount") + '</h3><p>' + (profile.overseasAccount ? escapeHtml(profile.overseasAccount) + " · " + t("justNow") : t("noData")) + '</p></div><a class="button" href="#/bind">' + (profile.overseasAccount ? t("unbind") : t("bindAction")) + "</a></div>";
+  const overseas = '<div class="setting-row"><div><h3>' + t("bindTitle") + '</h3><p>' + t("bindingDoesNotTransfer") + '</p></div><a class="button" href="#/bind">' + t("navPlatforms") + '</a></div>';
   shell([
     '<div class="account-shell"><section class="account-card">', pageHead(t("securityEyebrow"), t("securityTitle"), t("securityLead")),
     '<div class="account-content">', settings, overseas, "</div></section></div>"
@@ -873,6 +738,9 @@ function renderAbout() {
 }
 
 async function render() {
+  pageController?.abort();
+  pageController = new AbortController();
+  clearInterval(state.bindingTimer);
   state.route = (location.hash.slice(1) || "/").split("?")[0];
   document.documentElement.lang = { zh: "zh-CN", en: "en", es: "es", ja: "ja", fr: "fr", ko: "ko-KR" }[state.lang] || "zh-CN";
   const routeTitles = {
@@ -904,11 +772,13 @@ async function render() {
     if (state.route === "/convert") return await renderConvert();
     if (state.route === "/transfer") return await renderTransfer();
     if (state.route === "/bind") return await renderBind();
+    if (state.route === "/haiwen") return await renderHaiwenPage();
     if (state.route === "/wallet") return await renderWallet();
     if (state.route === "/security") return await renderSecurity();
     if (state.route === "/about") return renderAbout();
     location.hash = "#/";
   } catch (err) {
+    if (err.name === "AbortError") return;
     shell('<div class="empty"><h1>' + t("failed") + '</h1><p>' + escapeHtml(err.message) + "</p></div>");
   }
 }

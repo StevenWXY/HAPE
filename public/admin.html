@@ -40,6 +40,11 @@
 
     <div id="dashboard" hidden>
       <section class="stat-grid" id="stats" aria-live="polite"></section>
+      <section class="admin-panel">
+        <div class="panel-heading split-heading"><h2 data-copy="migrationTitle">海文发兑换审核</h2><button type="button" class="secondary-button" id="refresh-migrations" data-copy="refresh">刷新</button></div>
+        <div class="table-wrap"><table><thead><tr><th data-copy="asset">资产</th><th data-copy="wallet">钱包</th><th data-copy="amount">奖励</th><th data-copy="tableStatus">状态</th><th data-copy="tableAction">操作</th></tr></thead><tbody id="migrations-body"></tbody></table></div>
+        <p id="migration-feedback" class="inline-feedback" role="status"></p>
+      </section>
 
       <div class="admin-layout">
         <div class="main-column">
@@ -48,7 +53,7 @@
             <form id="airdrop-form" class="form-grid">
               <label><span data-copy="rule">空投规则</span><select id="rule-code" required></select></label>
               <label><span data-copy="wallet">目标钱包地址</span><input id="wallet-address" required spellcheck="false" placeholder="0x…"></label>
-              <label><span data-copy="chain">BNB 网络</span><select id="chain-id" required><option value="0x61">BNB Smart Chain Testnet · tBNB · 模拟</option><option value="0x38">BNB Smart Chain Mainnet · BNB · 模拟</option></select></label>
+              <label><span data-copy="chain">BNB 网络</span><select id="chain-id" required><option value="0x38">BNB Smart Chain Mainnet · BNB</option></select></label>
               <label id="asset-field"><span data-copy="asset">关联 HAPW（规则空投需要）</span><select id="asset-id"><option value="">加载中…</option></select></label>
               <label id="amount-field"><span data-copy="amount">空投数量（CLIP）</span><input id="amount" type="number" min="1" step="1" placeholder="25"></label>
               <label><span data-copy="requestId">请求编号</span><input id="request-id" required spellcheck="false"></label>
@@ -72,6 +77,6 @@
       </div>
     </div>
   </main>
-  <script src="/admin.js?v=2" defer></script>
+  <script src="/admin.js?v=3" defer></script>
 </body>
 </html>

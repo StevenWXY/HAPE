@@ -533,7 +533,7 @@ paths:
     get:
       tags: [Operations]
       summary: List BNB networks available to the airdrop console
-      description: Both entries are simulation-only until the CLIP BEP-20 contract and executor are deployed.
+      description: Network reference data; real settlement requires a configured BNB mainnet CLIP contract and receipt verifier.
       security: [{ ClipliAdminKey: [] }]
       operationId: listBNBNetworks
       responses:
@@ -553,8 +553,9 @@ paths:
         schema: { type: string }
     post:
       tags: [Operations]
-      summary: Simulate a BNB airdrop confirmation
-      description: Confirms the queued platform ledger entry and returns a simulated receipt. No contract call, RPC broadcast, or wallet signature is performed.
+      summary: Retired simulation endpoint
+      deprecated: true
+      description: Returns 410. Simulations cannot confirm or modify a real asset ledger.
       security: [{ ClipliAdminKey: [] }]
       operationId: simulateAirdrop
       requestBody:
@@ -563,11 +564,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AirdropSimulationRequest' }
       responses:
-        '200':
-          description: Simulated airdrop record
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AirdropEnvelope' }
+        '410': { description: Simulation is disabled for real assets }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -583,6 +580,7 @@ paths:
     post:
       tags: [Operations]
       summary: Record the external executor result for an airdrop
+      description: Immutable transaction hashes cannot be reused across tasks. Confirmation requires the configured chain, canonical block, at least three confirmations and an exact CLIP Transfer event from the treasury to the recipient. A submitted transfer is refunded only after a verified on-chain revert.
       security: [{ ClipliExecutorKey: [] }]
       operationId: updateAirdropResult
       requestBody:
@@ -815,6 +813,130 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '502': { $ref: '#/components/responses/ServiceUnavailable' }
 
+  /api/v1/integrations/platform/users/{userId}/migration-requests:
+    parameters:
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Integrations]
+      operationId: listHaiwenExchangeRequests
+      summary: List exchange requests for the current local account
+      responses:
+        '200':
+          description: User consent and operator review history
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MigrationApprovalListEnvelope' }
+        '403': { description: Account does not match the current session }
+    post:
+      tags: [Integrations]
+      operationId: requestHaiwenExchange
+      summary: Submit an exchange for operator review without writing off assets
+      description: Requires explicit consent and a current upstream binding. Does not create HAPW or credit balances. Sandbox requests are rejected. A changed wallet requires a new preview. Idempotent requestId and globally unique requestNo are retained through approval and retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: '#/components/schemas/ExternalMigrationRequest' }
+                - { required: [accepted] }
+      responses:
+        '201':
+          description: Request awaiting review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MigrationApprovalEnvelope' }
+        '200':
+          description: Existing request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MigrationApprovalEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { description: Account does not match the current session }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/admin/migration-requests:
+    get:
+      tags: [Integrations]
+      operationId: listHaiwenExchangeReviewQueue
+      summary: List exchange requests for operators
+      security: [{ ClipliAdminKey: [] }]
+      responses:
+        '200':
+          description: Operator review queue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MigrationApprovalListEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/admin/migration-requests/{requestId}/review:
+    parameters:
+      - { name: requestId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Integrations]
+      operationId: reviewHaiwenExchangeRequest
+      summary: Approve an irreversible exchange or reject a pending request
+      description: Approval rechecks binding, current quantities, mapping terms and treasury funds. A failed attempt retries the same requestNo. Ambiguous receipts require reconciliation. The original approved wallet is preserved.
+      security: [{ ClipliAdminKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, accepted]
+              properties:
+                action: { type: string, enum: [approve, reject] }
+                accepted: { type: boolean, const: true }
+                reason: { type: string, description: Required for rejection }
+      responses:
+        '200':
+          description: Updated request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MigrationApprovalEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api/v1/wallet/airdrops:
+    post:
+      tags: [Wallet]
+      operationId: claimRedemptionAirdrop
+      summary: Reserve an unspent redemption reward for the connected wallet
+      description: Wallet and network are taken from the current profile. A redemption has at most one active airdrop across all wallets. Reserved CLIP cannot be spent in Clipli.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, assetId]
+              properties:
+                requestId: { type: string }
+                assetId: { type: string }
+      responses:
+        '201': { description: Airdrop queued, content: { application/json: { schema: { $ref: '#/components/schemas/WalletAirdropEnvelope' } } } }
+        '200': { description: Existing airdrop, content: { application/json: { schema: { $ref: '#/components/schemas/WalletAirdropEnvelope' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/wallet/airdrops/{airdropId}/cancel:
+    parameters:
+      - { name: airdropId, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [Wallet]
+      operationId: cancelWalletAirdrop
+      summary: Cancel a queued reward transfer and release its reserved CLIP
+      description: Only the connected recipient can cancel. Submitted or confirmed transactions cannot be cancelled. Repeated cancellation does not release funds twice.
+      responses:
+        '200': { description: Cancelled airdrop, content: { application/json: { schema: { $ref: '#/components/schemas/WalletAirdropEnvelope' } } } }
+        '403': { description: Airdrop does not belong to the connected wallet }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /api/generations:
     post:
       tags: [Creation]
@@ -853,6 +975,7 @@ paths:
     get:
       tags: [Account]
       summary: Get the current profile and CLIP balance
+      description: Includes externalPlatform with code=haiwen and configured and sandbox booleans. Known test endpoints cannot create real transferred assets. This is connection configuration, not proof of account binding; query the verified bindings endpoint for binding status.
       operationId: getProfile
       responses:
         '200': { description: Current profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
@@ -880,26 +1003,20 @@ paths:
   /api/profile/overseas:
     post:
       tags: [Account]
-      summary: Bind a third-party account
+      summary: Retired unverified account binding endpoint
+      description: Use the external platform SMS verification and binding endpoints. Account text alone cannot establish a binding.
+      deprecated: true
       operationId: bindOverseasAccount
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [account]
-              properties:
-                account: { type: string, minLength: 4, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' }
       responses:
-        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '410': { description: Verified binding required, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
     delete:
       tags: [Account]
-      summary: Unbind the third-party account
+      summary: Retired local-only account unlink endpoint
+      description: Unbinding must be supported and confirmed by the external platform.
+      deprecated: true
       operationId: unbindOverseasAccount
       responses:
-        '200': { description: Updated profile, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
+        '410': { description: External unbinding unsupported, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
 
   /api/profile/settings:
     patch:
@@ -923,6 +1040,7 @@ paths:
     get:
       tags: [Compatibility]
       summary: Get homepage aggregate data
+      description: Counts derive from confirmed assets and recorded activity. featuredAsset is null when the portfolio is empty; counts.visible is the number of works, not a percentage.
       operationId: getOverview
       responses:
         '200': { description: Homepage data, content: { application/json: { schema: { $ref: '#/components/schemas/GenericDataEnvelope' } } } }
@@ -1207,6 +1325,11 @@ components:
       schema: { type: string, pattern: '^0x[0-9a-fA-F]{40}$' }
 
   responses:
+    UnprocessableEntity:
+      description: The requested operation cannot be completed with the current asset or binding state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     BadRequest:
       description: Request failed domain or JSON validation
       content:
@@ -1352,7 +1475,7 @@ components:
         assetId: { type: string }
         token: { type: string, const: CLIP }
         amount: { type: integer, minimum: 1 }
-        status: { type: string, enum: [queued, submitted, confirmed, failed] }
+        status: { type: string, enum: [queued, submitted, confirmed, failed, cancelled] }
         eligibility: { type: string, enum: [eligible] }
         executionMode: { type: string, enum: [external-executor, simulated-bnb] }
         network: { type: string, enum: ['0x61', '0x38'] }
@@ -1415,7 +1538,7 @@ components:
         network: { type: string, enum: [testnet, mainnet] }
         nativeCurrency: { type: string, enum: [tBNB, BNB] }
         contractDeployed: { type: boolean, const: false }
-        simulationOnly: { type: boolean, const: true }
+        simulationOnly: { type: boolean }
 
     BNBNetworkListEnvelope:
       type: object
@@ -1429,7 +1552,7 @@ components:
               type: array
               items: { $ref: '#/components/schemas/BNBNetwork' }
             contractDeployed: { type: boolean, const: false }
-            simulationOnly: { type: boolean, const: true }
+            simulationOnly: { type: boolean, const: false }
             note: { type: string }
 
     AirdropSimulationRequest:
@@ -1507,9 +1630,11 @@ components:
         previewUrl: { type: string, format: uri }
 
     ExternalAssetRef:
+      description: Public portfolio assets must have syncStatus=migrated and a nonempty transferId from a trusted external transfer feed or confirmed Haiwen write-off. Pending mirrors remain in migration audit only.
       type: object
       required: [providerCode, providerAssetId, syncStatus, lastSyncedAt]
       properties:
+        transferId: { type: string, description: External transfer receipt or Haiwen write-off request number }
         providerCode: { type: string }
         providerAssetId: { type: string }
         assetUrl: { type: string, format: uri }
@@ -1577,6 +1702,7 @@ components:
         treasuryBalance: { type: integer, minimum: 0 }
         liquidityAllocation: { type: integer, minimum: 0 }
         ledgerOutstanding: { type: integer, minimum: 0 }
+        onchainDistributed: { type: integer, minimum: 0 }
         totalDistributed: { type: integer, minimum: 0 }
         totalReclaimed: { type: integer, minimum: 0 }
         platformWallet: { type: string }
@@ -2309,6 +2435,63 @@ components:
         requestNo: { type: string, minLength: 1, maxLength: 128 }
         requestId: { type: string, minLength: 8, maxLength: 100 }
         accepted: { type: boolean, const: true }
+        walletAddress: { type: string, description: Recipient shown in the preview; an empty string means platform balance only }
+        chainId: { type: string, description: Wallet network shown in the preview }
+        mappingVersion: { type: string, description: Rule version shown in the preview }
+        creditYield: { type: integer, minimum: 1, maximum: 1000000000, description: Per-unit credits shown in the preview }
+
+    MigrationApproval:
+      type: object
+      required: [id, userId, externalUserId, requestId, requestNo, tplId, name, quantity, mappingVersion, creditYield, clipGrant, status, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        externalUserId: { type: string }
+        requestId: { type: string }
+        requestNo: { type: string }
+        tplId: { type: integer }
+        name: { type: string }
+        quantity: { type: integer, minimum: 1, maximum: 100 }
+        mappingVersion: { type: string }
+        creditYield: { type: integer, description: Credits per template unit }
+        clipGrant: { type: integer, description: CLIP per template unit }
+        walletAddress: { type: string }
+        chainId: { type: string }
+        status: { type: string, enum: [pending_review, processing, completed, rejected, attention_required] }
+        reason: { type: string }
+        migrationId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    MigrationApprovalEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [request]
+          properties:
+            request: { $ref: '#/components/schemas/MigrationApproval' }
+
+    MigrationApprovalListEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items: { type: array, items: { $ref: '#/components/schemas/MigrationApproval' } }
+
+    WalletAirdropEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [airdrop]
+          properties:
+            airdrop: { $ref: '#/components/schemas/AirdropRecord' }
 
     ExternalMigration:
       type: object
@@ -2323,6 +2506,9 @@ components:
         quantity: { type: integer, minimum: 1 }
         mappingVersion: { type: string }
         clipliAssetIds: { type: array, items: { type: string } }
+        treasuryReserved: { type: integer, minimum: 0, description: Funds held until local settlement succeeds }
+        walletAddress: { type: string }
+        chainId: { type: string }
         redemptionIds: { type: array, items: { type: string } }
         creditsGranted: { type: integer, minimum: 0 }
         clipGranted: { type: integer, minimum: 0 }

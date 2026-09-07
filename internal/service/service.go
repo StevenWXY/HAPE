@@ -1,8 +1,10 @@
 package service
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,10 +28,12 @@ func apiError(status int, code, message string) error {
 }
 
 type Service struct {
-	store      *store.Memory
-	now        func() time.Time
-	platform   ExternalPlatformClient
-	externalMu sync.Mutex
+	store           *store.Memory
+	now             func() time.Time
+	platform        ExternalPlatformClient
+	externalMu      sync.Mutex
+	airdropVerifier func(domain.AirdropRecord, AirdropResultInput) error
+	bnbExecution    *BNBExecution
 }
 
 func New(memory *store.Memory, platforms ...ExternalPlatformClient) *Service {
@@ -46,7 +50,7 @@ func New(memory *store.Memory, platforms ...ExternalPlatformClient) *Service {
 // changing handlers or business rules.
 func NewWithExternalPlatform(memory *store.Memory, platform ExternalPlatformClient) *Service {
 	if platform == nil {
-		platform = NewDemoExternalPlatform()
+		platform = NewHTTPExternalPlatform("", nil)
 	}
 	return &Service{store: memory, now: time.Now, platform: platform}
 }
@@ -63,6 +67,7 @@ func (s *Service) SetExternalPlatform(platform ExternalPlatformClient) {
 
 func (s *Service) Snapshot() store.State {
 	state := s.store.Snapshot()
+	state.CLIP.AvailableBalance = state.CLIP.Balance - state.CLIP.Reserved
 	syncGenerationAccount(&state)
 	return state
 }
@@ -146,7 +151,7 @@ func (s *Service) ListAssets(options AssetListOptions) AssetListResult {
 	status := strings.ToLower(strings.TrimSpace(options.Status))
 	owner := strings.ToLower(strings.TrimSpace(options.Owner))
 	holder := strings.ToLower(strings.TrimSpace(options.RightsHolder))
-	for _, asset := range s.Snapshot().Assets {
+	for _, asset := range s.PortfolioSnapshot().Assets {
 		if asset.Kind != "HAPW" {
 			continue
 		}
@@ -216,7 +221,7 @@ func tokenNumber(tokenID string) int {
 }
 
 func (s *Service) GetAsset(id string) (domain.HAPWAsset, bool) {
-	for _, asset := range s.Snapshot().Assets {
+	for _, asset := range s.PortfolioSnapshot().Assets {
 		if asset.ID == id || asset.TokenID == id || strings.TrimPrefix(asset.TokenID, "#") == strings.TrimPrefix(id, "#") {
 			return asset, true
 		}
@@ -237,7 +242,7 @@ type HAPWSummary struct {
 
 func (s *Service) HAPWSummary() HAPWSummary {
 	var summary HAPWSummary
-	for _, asset := range s.Snapshot().Assets {
+	for _, asset := range s.PortfolioSnapshot().Assets {
 		if asset.Kind != "HAPW" {
 			continue
 		}
@@ -389,7 +394,7 @@ func (s *Service) Redeem(input RedemptionInput) (RedemptionResult, bool, error) 
 			}
 		}
 		index := assetIndex(state.Assets, input.AssetID)
-		if index < 0 || state.Assets[index].RedemptionStatus != "available" {
+		if index < 0 || state.Assets[index].RedemptionStatus != "available" || state.Assets[index].ExchangeAvailable || state.Assets[index].External.SyncStatus != "migrated" || state.Assets[index].External.TransferID == "" {
 			return apiError(http.StatusBadRequest, "hapw_not_redeemable", "This HAPW is not available for redemption")
 		}
 		if !input.Accepted {
@@ -416,7 +421,7 @@ func (s *Service) Redeem(input RedemptionInput) (RedemptionResult, bool, error) 
 		state.CLIPTransactions = prepend(domain.CLIPTransaction{
 			ID: uniqueID("clip-grant", now), TypeCode: "redemptionGrant", Type: "HAPW 核销领取", TypeEn: "HAPW redemption grant", TypeKo: "HAPW 상각 지급", Amount: grant,
 			Counterparty: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameEn), CounterpartyKo: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameKo),
-			StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "0xgrant…demo", CreatedAt: createdAt,
+			StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "", CreatedAt: createdAt,
 		}, state.CLIPTransactions)
 		syncGenerationAccount(state)
 		result = RedemptionResult{Redemption: redemption, GenerationAccount: state.GenerationAccount, ClipBalance: state.CLIP.Balance}
@@ -477,7 +482,7 @@ func (s *Service) Generate(input GenerationInput) (GenerationResult, bool, error
 		if state.GenerationAccount.Balance < cost || state.Redemptions[redemptionIndex].CreditsRemaining < cost {
 			return apiError(http.StatusBadRequest, "insufficient_generation_credits", "Insufficient creation credits for this HAPW license")
 		}
-		if state.CLIP.Balance < clipCost {
+		if state.CLIP.Balance-state.CLIP.Reserved < clipCost {
 			return apiError(http.StatusBadRequest, "insufficient_clip", "Insufficient CLIP for this generation")
 		}
 		now := s.now()
@@ -495,7 +500,7 @@ func (s *Service) Generate(input GenerationInput) (GenerationResult, bool, error
 		state.CLIPTransactions = prepend(domain.CLIPTransaction{
 			ID: uniqueID("clip-generation", now), TypeCode: "generationFee", Type: "AI 视频生成费", TypeEn: "AI video generation fee", TypeKo: "AI 영상 생성 수수료", Amount: -clipCost,
 			Counterparty: generation.Title, CounterpartyEn: generation.TitleEn, CounterpartyKo: generation.TitleKo,
-			StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "0xgen…demo", CreatedAt: createdAt,
+			StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "", CreatedAt: createdAt,
 		}, state.CLIPTransactions)
 		syncGenerationAccount(state)
 		result = GenerationResult{Generation: generation, GenerationAccount: state.GenerationAccount, ClipBalance: state.CLIP.Balance}
@@ -535,7 +540,7 @@ func (s *Service) Convert(input ConversionInput) (domain.Conversion, bool, error
 		if (input.Days != 30 && input.Days != 90 && input.Days != 180) || strings.TrimSpace(input.Region) == "" || !input.Accepted {
 			return apiError(http.StatusBadRequest, "invalid_conversion", "Please select a region, duration and accept the terms")
 		}
-		if state.CLIP.Balance < 18 {
+		if state.CLIP.Balance-state.CLIP.Reserved < 18 {
 			return apiError(http.StatusBadRequest, "insufficient_clip", "Insufficient CLIP balance")
 		}
 		asset := &state.Assets[index]
@@ -544,7 +549,7 @@ func (s *Service) Convert(input ConversionInput) (domain.Conversion, bool, error
 		state.Conversions = prepend(result, state.Conversions)
 		state.CLIP.Balance -= 18
 		reclaimCLIP(state, 18)
-		state.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-license", now), TypeCode: "license", Type: "授权手续费", TypeEn: "License fee", Amount: -18, Counterparty: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameEn), StatusCode: "completed", Status: "已完成", StatusEn: "Completed", TxHash: "0xdemo…clipli", CreatedAt: formatMinute(now)}, state.CLIPTransactions)
+		state.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-license", now), TypeCode: "license", Type: "授权手续费", TypeEn: "License fee", Amount: -18, Counterparty: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.Name), CounterpartyEn: fmt.Sprintf("HAPW %s · %s", asset.TokenID, asset.NameEn), StatusCode: "completed", Status: "已完成", StatusEn: "Completed", TxHash: "", CreatedAt: formatMinute(now)}, state.CLIPTransactions)
 		asset.Status, asset.StatusEn = "授权处理中", "License processing"
 		return nil
 	})
@@ -625,7 +630,7 @@ func (s *Service) Exchange(input ExchangeInput) (ExchangeResult, bool, error) {
 			}
 		}
 		index := assetIndex(state.Assets, input.AssetID)
-		if index < 0 || !state.Assets[index].ExchangeAvailable || state.Assets[index].RedemptionStatus != "available" {
+		if index < 0 || !state.Assets[index].ExchangeAvailable || state.Assets[index].RedemptionStatus != "available" || state.Assets[index].External.SyncStatus != "migrated" || state.Assets[index].External.TransferID == "" || state.Assets[index].Owner != "Clipli" {
 			return apiError(http.StatusBadRequest, "hapw_reserve_unavailable", "This reserve HAPW is unavailable")
 		}
 		if !input.Accepted {
@@ -636,17 +641,21 @@ func (s *Service) Exchange(input ExchangeInput) (ExchangeResult, bool, error) {
 			return apiError(http.StatusTooManyRequests, "hapw_exchange_daily_limit", "The daily HAPW exchange limit has been reached")
 		}
 		asset := &state.Assets[index]
-		quote, _ := QuoteHAPWExchange(asset.ClipPrice, state.CLIP.HAPWExchangeFeeRate)
-		if state.CLIP.Balance < quote.Total {
+		quote, quoteErr := QuoteHAPWExchange(asset.ClipPrice, state.CLIP.HAPWExchangeFeeRate)
+		if quoteErr != nil {
+			return quoteErr
+		}
+		if state.CLIP.Balance-state.CLIP.Reserved < quote.Total {
 			return apiError(http.StatusBadRequest, "insufficient_clip", "Insufficient CLIP balance")
 		}
 		now := s.now()
 		exchange := domain.HAPWExchange{ID: uniqueID("hapw-exchange", now), RequestID: input.RequestID, AssetID: asset.ID, Price: quote.Price, Fee: quote.Fee, Total: quote.Total, FeeRate: quote.FeeRate, StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", CreatedAt: formatMinute(now)}
 		asset.ExchangeAvailable = false
+		asset.Owner = migrationOwner(state.Session.UserRef, state.Profile.Wallet)
 		state.CLIP.Balance -= quote.Total
 		reclaimCLIP(state, quote.Total)
 		state.HAPWExchanges = prepend(exchange, state.HAPWExchanges)
-		state.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-hapw", now), TypeCode: "hapwExchange", Type: "HAPW 储备兑换", TypeEn: "HAPW reserve exchange", TypeKo: "HAPW 준비금 교환", Amount: -quote.Total, Counterparty: fmt.Sprintf("HAPW %s · 本金 %d + 手续费 %d", asset.TokenID, quote.Price, quote.Fee), CounterpartyEn: fmt.Sprintf("HAPW %s · price %d + fee %d", asset.TokenID, quote.Price, quote.Fee), StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "0xhapw…demo", CreatedAt: formatMinute(now)}, state.CLIPTransactions)
+		state.CLIPTransactions = prepend(domain.CLIPTransaction{ID: uniqueID("clip-hapw", now), TypeCode: "hapwExchange", Type: "HAPW 储备兑换", TypeEn: "HAPW reserve exchange", TypeKo: "HAPW 준비금 교환", Amount: -quote.Total, Counterparty: fmt.Sprintf("HAPW %s · 本金 %d + 手续费 %d", asset.TokenID, quote.Price, quote.Fee), CounterpartyEn: fmt.Sprintf("HAPW %s · price %d + fee %d", asset.TokenID, quote.Price, quote.Fee), StatusCode: "completed", Status: "已完成", StatusEn: "Completed", StatusKo: "완료", TxHash: "", CreatedAt: formatMinute(now)}, state.CLIPTransactions)
 		result = ExchangeResult{Exchange: exchange, Asset: *asset, ClipBalance: state.CLIP.Balance}
 		return nil
 	})
@@ -703,7 +712,7 @@ func (s *Service) WalletAssets(address string) ([]domain.WalletAsset, error) {
 	if !validWalletAddress(address) {
 		return nil, apiError(http.StatusBadRequest, "invalid_wallet_address", "A valid EVM wallet address is required")
 	}
-	state := s.Snapshot()
+	state := s.PortfolioSnapshot()
 	items := make([]domain.WalletAsset, 0)
 	seen := map[string]bool{}
 	for _, item := range state.WalletAssets {
@@ -762,11 +771,19 @@ func (s *Service) AirdropEligibility(ruleCode, address, assetID string) (Airdrop
 			if redemption.AssetID == assetID {
 				eligibility.Amount = redemption.ClipGranted
 				for _, existing := range state.Airdrops {
-					if existing.RuleCode == rule.Code && existing.AssetID == assetID && strings.EqualFold(existing.WalletAddress, address) && existing.Status != "failed" {
+					if existing.RuleCode == rule.Code && existing.AssetID == assetID && existing.Status != "failed" && existing.Status != "cancelled" {
 						eligibility.ExistingID = existing.ID
 						eligibility.Reason = "airdrop_already_created"
 						return eligibility, nil
 					}
+				}
+				if !redemptionWalletMatches(state, assetID, address) {
+					eligibility.Reason = "airdrop_wallet_mismatch"
+					return eligibility, nil
+				}
+				if state.CLIP.Balance-state.CLIP.Reserved < eligibility.Amount {
+					eligibility.Reason = "insufficient_clip"
+					return eligibility, nil
 				}
 				eligibility.Eligible = true
 				return eligibility, nil
@@ -804,6 +821,10 @@ func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool,
 		amount := input.Amount
 		allocationSource := "treasury-reservation"
 		if rule.Code == "hapw_redemption" {
+			if !redemptionWalletMatches(*state, input.AssetID, address) {
+				return apiError(http.StatusConflict, "airdrop_wallet_mismatch", "The redemption does not belong to this wallet")
+			}
+			amount = 0
 			allocationSource = "redemption-entitlement"
 			amount = 0
 			for _, redemption := range state.Redemptions {
@@ -822,7 +843,7 @@ func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool,
 		token := rule.Token
 		for _, item := range state.Airdrops {
 			if item.RequestID == input.RequestID {
-				if item.Status == "failed" {
+				if item.Status == "failed" || item.Status == "cancelled" {
 					return apiError(http.StatusConflict, "request_id_reused", "A failed airdrop must be recreated with a new requestId")
 				}
 				if item.RuleCode != rule.Code || !strings.EqualFold(item.WalletAddress, address) || item.ChainID != chainID || item.AssetID != strings.TrimSpace(input.AssetID) || item.Amount != amount || !strings.EqualFold(item.Token, token) {
@@ -831,7 +852,7 @@ func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool,
 				result, idempotent = item, true
 				return nil
 			}
-			if rule.Code == "hapw_redemption" && item.RuleCode == rule.Code && item.AssetID == strings.TrimSpace(input.AssetID) && strings.EqualFold(item.WalletAddress, address) && item.Status != "failed" {
+			if rule.Code == "hapw_redemption" && item.RuleCode == rule.Code && item.AssetID == strings.TrimSpace(input.AssetID) && item.Status != "failed" && item.Status != "cancelled" {
 				return apiError(http.StatusConflict, "airdrop_already_created", "An active airdrop already exists for this wallet and redemption")
 			}
 		}
@@ -842,6 +863,11 @@ func (s *Service) CreateAirdrop(input AirdropInput) (domain.AirdropRecord, bool,
 			state.CLIPTreasury.TreasuryBalance -= amount
 			state.CLIPTreasury.LedgerOutstanding += amount
 			state.CLIPTreasury.TotalDistributed += amount
+		} else {
+			if state.CLIP.Balance-state.CLIP.Reserved < amount {
+				return apiError(http.StatusConflict, "insufficient_clip", "The CLIP grant has already been spent or reserved")
+			}
+			state.CLIP.Reserved += amount
 		}
 		now := s.now().UTC().Format(time.RFC3339)
 		result = domain.AirdropRecord{ID: uniqueID("airdrop", s.now()), RequestID: input.RequestID, RuleCode: rule.Code, WalletAddress: address, ChainID: chainID, AssetID: strings.TrimSpace(input.AssetID), Token: token, Amount: amount, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: allocationSource, CreatedAt: now, UpdatedAt: now}
@@ -872,7 +898,7 @@ func (s *Service) SimulateAirdrop(id, chainID string) (domain.AirdropRecord, err
 			return apiError(http.StatusNotFound, "airdrop_not_found", "Airdrop record not found")
 		}
 		item := &state.Airdrops[index]
-		if item.Status == "failed" {
+		if item.Status == "failed" || item.Status == "cancelled" {
 			return apiError(http.StatusConflict, "airdrop_failed", "A failed airdrop must be recreated before simulation")
 		}
 		if item.Status == "confirmed" && item.Simulated {
@@ -900,6 +926,34 @@ func (s *Service) SimulateAirdrop(id, chainID string) (domain.AirdropRecord, err
 
 func (s *Service) UpdateAirdrop(id string, input AirdropResultInput) (domain.AirdropRecord, error) {
 	var result domain.AirdropRecord
+	var checked domain.AirdropRecord
+	for _, item := range s.Snapshot().Airdrops {
+		if item.ID != id {
+			continue
+		}
+		checked = item
+		if item.Status == "failed" || item.Status == "cancelled" {
+			return result, apiError(http.StatusConflict, "airdrop_failed_terminal", "A terminal airdrop cannot be executed")
+		}
+		if item.Status == "confirmed" {
+			if input.Status == "confirmed" && item.TxHash == input.TxHash {
+				return item, nil
+			}
+			return result, apiError(http.StatusConflict, "airdrop_receipt_conflict", "A confirmed airdrop cannot be changed")
+		}
+		if input.Status == "confirmed" || input.Status == "submitted" || (input.Status == "failed" && item.TxHash != "") {
+			if !validTransactionHash(input.TxHash) {
+				return result, apiError(http.StatusBadRequest, "invalid_transaction_hash", "A valid BNB transaction hash is required")
+			}
+			if s.airdropVerifier == nil {
+				return result, apiError(http.StatusServiceUnavailable, "airdrop_executor_not_configured", "Configure the CLIP contract and BNB receipt verifier first")
+			}
+			if err := s.airdropVerifier(item, input); err != nil {
+				return result, err
+			}
+		}
+		break
+	}
 	err := s.store.Update(func(state *store.State) error {
 		index := -1
 		for i := range state.Airdrops {
@@ -915,15 +969,26 @@ func (s *Service) UpdateAirdrop(id string, input AirdropResultInput) (domain.Air
 			return apiError(http.StatusBadRequest, "invalid_airdrop_status", "Airdrop status must be submitted, confirmed, or failed")
 		}
 		item := &state.Airdrops[index]
+		if item.Status != checked.Status || item.TxHash != checked.TxHash {
+			return apiError(http.StatusConflict, "airdrop_state_changed", "The airdrop changed during verification; retry with the same receipt")
+		}
 		if item.Status == "confirmed" {
 			result = *item
 			return nil
 		}
-		if item.Status == "failed" {
+		if item.Status == "failed" || item.Status == "cancelled" {
 			return apiError(http.StatusConflict, "airdrop_failed_terminal", "A failed airdrop must be recreated with a new requestId")
 		}
 		if (input.Status == "submitted" || input.Status == "confirmed") && !validTransactionHash(input.TxHash) {
 			return apiError(http.StatusBadRequest, "invalid_transaction_hash", "A valid BNB transaction hash is required")
+		}
+		if item.TxHash != "" && item.TxHash != input.TxHash {
+			return apiError(http.StatusConflict, "airdrop_receipt_conflict", "A submitted transaction hash cannot be replaced")
+		}
+		for _, other := range state.Airdrops {
+			if other.ID != item.ID && input.TxHash != "" && strings.EqualFold(other.TxHash, input.TxHash) {
+				return apiError(http.StatusConflict, "airdrop_receipt_reused", "The transaction already belongs to another airdrop")
+			}
 		}
 		if input.Status == "failed" && strings.TrimSpace(input.FailureReason) == "" {
 			return apiError(http.StatusBadRequest, "failure_reason_required", "A failure reason is required")
@@ -936,22 +1001,53 @@ func (s *Service) UpdateAirdrop(id string, input AirdropResultInput) (domain.Air
 			}
 			state.CLIPTreasury.TotalDistributed -= item.Amount
 		}
+		if item.AllocationSource == "redemption-entitlement" && (input.Status == "failed" || input.Status == "confirmed") {
+			state.CLIP.Reserved -= item.Amount
+			if input.Status == "confirmed" {
+				state.CLIP.Balance -= item.Amount
+			}
+		}
+		if input.Status == "confirmed" {
+			state.CLIPTreasury.LedgerOutstanding -= item.Amount
+			state.CLIPTreasury.OnchainDistributed += item.Amount
+		}
+		if input.Status == "confirmed" && s.bnbExecution != nil {
+			state.CLIPTreasury.TreasuryBalance = 0
+		}
 		item.Status, item.TxHash, item.ExecutorRef, item.FailureReason = input.Status, input.TxHash, input.ExecutorRef, input.FailureReason
 		item.UpdatedAt = s.now().UTC().Format(time.RFC3339)
 		result = *item
 		return nil
 	})
+	if err == nil && input.Status == "confirmed" && s.bnbExecution != nil {
+		err = s.SyncBNBTreasury(s.bnbExecution)
+	}
 	return result, err
 }
 
 func queueRedemptionAirdrop(state *store.State, redemption domain.HAPWRedemption, address, chainID string, now time.Time) {
 	for _, item := range state.Airdrops {
-		if item.RuleCode == "hapw_redemption" && item.AssetID == redemption.AssetID && strings.EqualFold(item.WalletAddress, address) && item.Status != "failed" {
+		if item.RuleCode == "hapw_redemption" && item.AssetID == redemption.AssetID && item.Status != "failed" && item.Status != "cancelled" {
 			return
 		}
 	}
+	if NormalizeBNBChain(chainID) == "" || state.CLIP.Balance-state.CLIP.Reserved < redemption.ClipGranted {
+		return
+	}
+	state.CLIP.Reserved += redemption.ClipGranted
 	createdAt := now.UTC().Format(time.RFC3339)
 	state.Airdrops = prepend(domain.AirdropRecord{ID: uniqueID("airdrop", now), RequestID: "airdrop-" + redemption.RequestID, RuleCode: "hapw_redemption", WalletAddress: address, ChainID: chainID, AssetID: redemption.AssetID, Token: "CLIP", Amount: redemption.ClipGranted, Status: "queued", Eligibility: "eligible", ExecutionMode: "external-executor", AllocationSource: "redemption-entitlement", CreatedAt: createdAt, UpdatedAt: createdAt}, state.Airdrops)
+}
+
+func redemptionWalletMatches(state store.State, assetID, address string) bool {
+	asset, ok := findAsset(state.Assets, assetID)
+	if !ok {
+		return false
+	}
+	if validWalletAddress(asset.Owner) {
+		return strings.EqualFold(asset.Owner, address)
+	}
+	return (asset.Owner == state.Session.UserRef || asset.Owner == "Clipli") && strings.EqualFold(state.Profile.Wallet, address)
 }
 
 func walletAssetFromHAPW(asset domain.HAPWAsset, address string) domain.WalletAsset {
@@ -992,35 +1088,6 @@ func validTransactionHash(value string) bool {
 		}
 	}
 	return true
-}
-
-func (s *Service) SetOverseasAccount(account string) (domain.Profile, error) {
-	account = strings.TrimSpace(account)
-	if len(account) < 4 || len(account) > 64 {
-		return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_account", "Enter a valid overseas account")
-	}
-	for _, char := range account {
-		if !(char >= 'A' && char <= 'Z') && !(char >= 'a' && char <= 'z') && !(char >= '0' && char <= '9') && char != '_' && char != '-' {
-			return domain.Profile{}, apiError(http.StatusBadRequest, "invalid_account", "Enter a valid overseas account")
-		}
-	}
-	var profile domain.Profile
-	err := s.store.Update(func(state *store.State) error {
-		state.Profile.OverseasAccount = account
-		profile = state.Profile
-		return nil
-	})
-	return profile, err
-}
-
-func (s *Service) ClearOverseasAccount() domain.Profile {
-	var profile domain.Profile
-	_ = s.store.Update(func(state *store.State) error {
-		state.Profile.OverseasAccount = ""
-		profile = state.Profile
-		return nil
-	})
-	return profile
 }
 
 func (s *Service) UpdateSettings(walletSign, expiryReminder *bool) domain.Profile {
@@ -1076,7 +1143,11 @@ func syncGenerationAccount(state *store.State) {
 }
 
 func uniqueID(prefix string, now time.Time) string {
-	return fmt.Sprintf("%s-%d", prefix, now.UnixNano())
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		panic("cannot generate operation identifier: " + err.Error())
+	}
+	return fmt.Sprintf("%s-%d-%x", prefix, now.UnixNano(), suffix)
 }
 func formatMinute(value time.Time) string { return value.UTC().Format("2006-01-02 15:04") }
 
@@ -1084,4 +1155,40 @@ func prepend[T any](value T, values []T) []T {
 	result := make([]T, 0, len(values)+1)
 	result = append(result, value)
 	return append(result, values...)
+}
+
+// PortfolioSnapshot excludes provisional mirrors and unconfirmed upstream records.
+func (s *Service) PortfolioSnapshot() store.State {
+	state := s.Snapshot()
+	assets := make([]domain.HAPWAsset, 0, len(state.Assets))
+	for _, asset := range state.Assets {
+		if asset.External.SyncStatus == "migrated" && asset.External.TransferID != "" {
+			assets = append(assets, asset)
+		}
+	}
+	state.Assets = assets
+	return state
+}
+
+func (s *Service) ExternalPlatformConfigured() bool {
+	client, ok := s.platform.(*HTTPExternalPlatform)
+	if ok {
+		return strings.TrimSpace(client.BaseURL) != ""
+	}
+	return s.platform != nil
+}
+
+// Sandbox partner accounts may be used to test binding, but cannot mint a
+// portfolio entry that the UI presents as a real external transfer.
+func (s *Service) ExternalPlatformSandbox() bool {
+	client, ok := s.platform.(*HTTPExternalPlatform)
+	if !ok {
+		return false
+	}
+	parsed, err := url.Parse(client.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "api-test.hnccc.com" || host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasPrefix(host, "sandbox.") || strings.HasPrefix(host, "api-test.") || strings.HasPrefix(host, "test.") || strings.HasSuffix(host, ".test")
 }

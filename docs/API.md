@@ -1,6 +1,36 @@
 # Clipli 外部合作 API
 
+## 海文发闭环更新（2026-09-08）
+
+七项海文发上游接口的覆盖与限制见 [集成核对报告](HAIWEN_INTEGRATION_AUDIT.md)。首次启动为空；之后从 `CLIPLI_STATE_FILE` 恢复已验证资产、绑定、兑换、审核与空投账本，不在重启时重置资产。
+
+| 方法 | Clipli 接口 | 行为 |
+| --- | --- | --- |
+| GET / POST | `/api/v1/integrations/platform/users/{userId}/migration-requests` | 查看 / 提交兑换申请；只保存同意条款与兑换条件，不核销、不发奖 |
+| GET | `/api/v1/admin/migration-requests` | 运营审核队列，需管理员密钥 |
+| POST | `/api/v1/admin/migration-requests/{requestId}/review` | `{action: approve或reject, accepted: true, reason}`；核对原条件后执行，拒绝须填写原因 |
+| POST | `/api/v1/wallet/airdrops` | `{assetId, requestId}`；为当前钱包预留未使用的核销奖励 |
+| POST | `/api/v1/wallet/airdrops/{airdropId}/cancel` | 仅取消尚未提交链上交易的本人奖励空投，幂等释放预留 |
+
+`clip` 增加 `reserved`、`availableBalance`，站内生成与兑换只能使用 `balance - reserved`。领取到链上后同时扣减站内余额，不能重复领取。金库增加 `onchainDistributed`。模拟空投接口返回 410，不再产生假“确认”。执行结果需验证主网合约、发送方、收款方、金额、规范区块和至少 3 次确认；已提交交易只有链上明确失败后才能退款。
+
+兑换期间资金先预留，外部确认后本地事务一次性完成。网络错误保持原 `requestNo` 重试；回执矛盾或本地结算失败进入待对账状态，不重复核销。读取绑定及后续资产操作都重新查询海文发绑定状态。目录数量必须完整返回，缺项不能补成零；缺少或矛盾的核销回执不能推断成功。
+
 本文档面向接入 Clipli 的外部资产平台、版权平台和发行平台。Clipli 服务已部署，合作方只需使用部署方提供的 API 域名、凭据和版本配置；本文档中的路径均相对于该部署根地址。
+
+## 真实资产与前端绑定（2026-09）
+
+- 默认启动不产生 HAPW、作品样例、钱包持仓、CLIP 余额、创作额度、交易历史或已绑定账号。演示资产仅保留在 `internal/testfixture` 中供测试使用，不进入服务端启动依赖。
+- `HAPW_ASSET_SOURCE_URL` 仅接收可信平台返回的**已完成划转**记录。除原有资产必填字段外，必须提供 `owner`、`external.providerCode`、`external.providerAssetId`、`external.transferId` 和 `external.syncStatus: migrated`。不再补造来源 ID 或把普通目录同步标记为已划转。
+- 成功返回 `[]` 或 `{data: []}` 表示空持仓；无效结构、缺少划转凭据、重复资产 ID 或网络失败保留最近有效结果。不能用演示资产降级。
+- 海文发确认核销后以既有 `requestNo` 保存 `external.transferId`。待核销、失败及待对账的镜像仅保留在划转审计中，不进入公共资产列表、仪表盘、生成台或资产汇总。
+- `GET /api/profile` 新增 `externalPlatform: {code: "haiwen", configured: boolean, sandbox: boolean}`，仅表示连接是否配置。前端通过现有 `GET /api/v1/integrations/platform/bindings?userId=...` 查询经外部平台确认的绑定状态。
+- 平台页通过既有短信与绑定接口提交海文发用户 ID、手机号、验证码和 `verificationId`；绑定成功后可按分页模板目录查询真实持仓数量。查询持仓和绑定账号均不会新增 Clipli 资产。
+- 旧 `POST/DELETE /api/profile/overseas` 已返回 `410`，错误码分别是 `verified_binding_required`、`external_unbinding_unsupported`。不可再用填写账号或修改本地字段来伪装绑定、解绑成功。
+- 未配置海文发连接时，API 不使用演示短信/资产适配器。OpenSea、Foundation、SuperRare、Art Blocks 目前只提供官网入口，前端明确显示尚未接入。
+- 已知海文发测试环境（`api-test.hnccc.com`）在页面标注为测试环境，测试持仓与正式资产分离。迁移服务返回 `external_sandbox_transfer_disabled`，不会调用外部核销或创建资产。
+- 现有迁移写入 API 仍由运营密钥保护。此版本没有新增公开核销或划转权限；映射配置、实际 CLIP 金库入账、身份认证和持久化仍须由正式部署接入后才能完成真实资产结算。默认金库余额为零，不以模拟金库支撑真实核销。
+- 首页 `featuredAsset` 在空持仓时为 `null`，首页统计来自实际记录，`counts.visible` 表示已接入作品数。集合字段在空状态下返回数组。
 
 ## 1. 通用约定
 

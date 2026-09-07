@@ -8,6 +8,8 @@
     }
   };
   const state = { lang: sessionStorage.getItem("clipli-admin-lang") || "zh", key: "", executorKey: "", rules: [], assets: [], queue: [] };
+  Object.assign(copy.zh, {title: '资产运营后台', lead: '海文发兑换审核与 CLIP 空投管理。', queueLead: '空投状态以真实链上回执为准。', executorLead: '确认结果需要链上验证通过。', migrationTitle: '海文发兑换审核', approveMigration: '核销并兑换', rejectMigration: '拒绝', reviewConsent: '确认核销所选海文发资产。此操作不可撤销。', rejectReason: '拒绝原因', noMigrations: '暂无兑换申请'});
+  Object.assign(copy.en, {title: 'Asset operations', lead: 'HAIWEN exchange reviews and CLIP airdrops.', queueLead: 'Airdrop status follows verified blockchain receipts.', executorLead: 'Confirmation requires a verified on-chain receipt.', migrationTitle: 'HAIWEN exchange review', approveMigration: 'Write off and exchange', rejectMigration: 'Reject', reviewConsent: 'Confirm the irreversible write-off of the selected HAIWEN assets.', rejectReason: 'Rejection reason', noMigrations: 'No exchange requests'});
   const $ = (id) => document.getElementById(id);
   const text = (key) => (copy[state.lang] && copy[state.lang][key]) || copy.zh[key] || key;
   const escapeHTML = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[char]));
@@ -25,7 +27,7 @@
     if (options.body) headers["Content-Type"] = "application/json";
     if (auth === "admin" && state.key) headers["X-Clipli-Admin-Key"] = state.key;
     if (auth === "executor" && state.executorKey) headers["X-Clipli-Executor-Key"] = state.executorKey;
-    const response = await fetch(path, Object.assign({}, options, { headers }));
+    const response = await fetch(path, Object.assign({}, options, { headers, body: options.body && typeof options.body !== 'string' ? JSON.stringify(options.body) : options.body }));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = payload.error || {};
@@ -69,8 +71,7 @@
   function renderQueue() {
     const body = $("queue-body");
     if (!state.queue.length) { body.innerHTML = '<tr><td colspan="7" class="table-empty">' + text("emptyQueue") + '</td></tr>'; return; }
-    body.innerHTML = state.queue.map(item => '<tr><td><strong title="' + escapeHTML(item.walletAddress) + '">' + escapeHTML(shortAddress(item.walletAddress)) + '</strong><small>' + escapeHTML(item.chainId) + '</small></td><td>' + escapeHTML(item.ruleCode) + '<small>' + escapeHTML(item.assetId || "-") + '</small></td><td><strong>' + Number(item.amount || 0).toLocaleString() + ' ' + escapeHTML(item.token) + '</strong></td><td><span class="status-pill ' + escapeHTML(item.status) + '">' + escapeHTML(item.status) + '</span>' + (item.simulated ? '<small>' + escapeHTML(text("simulated")) + '</small>' : '') + '</td><td>' + escapeHTML(item.createdAt) + '</td><td>' + (item.txHash ? '<code>' + escapeHTML(item.txHash) + '</code>' : '<span class="muted-cell">' + text("noTx") + '</span>') + '</td><td>' + ((item.status === "queued" || item.status === "submitted") ? '<button type="button" class="secondary-button queue-simulate" data-airdrop-id="' + escapeHTML(item.id) + '" data-chain-id="' + escapeHTML(item.chainId || "0x61") + '">' + escapeHTML(text("simulate")) + '</button>' : '<span class="muted-cell">-</span>') + '</td></tr>').join("");
-    document.querySelectorAll(".queue-simulate").forEach(button => button.addEventListener("click", () => simulateAirdrop(button)));
+    body.innerHTML = state.queue.map(item => '<tr><td><strong title="' + escapeHTML(item.walletAddress) + '">' + escapeHTML(shortAddress(item.walletAddress)) + '</strong><small>' + escapeHTML(item.chainId) + '</small></td><td>' + escapeHTML(item.ruleCode) + '<small>' + escapeHTML(item.assetId || '-') + '</small></td><td><strong>' + Number(item.amount || 0).toLocaleString() + ' ' + escapeHTML(item.token) + '</strong></td><td><span class="status-pill ' + escapeHTML(item.status) + '">' + escapeHTML(item.status) + '</span></td><td>' + escapeHTML(item.createdAt) + '</td><td><code>' + escapeHTML(item.txHash || text('noTx')) + '</code></td><td><code>' + escapeHTML(item.id) + '</code></td></tr>').join('');
   }
 
   function updateRuleFields() {
@@ -82,8 +83,12 @@
   }
 
   async function loadAssets() {
-    const data = await request("/api/v1/hapw/assets?page=1&pageSize=100", {}, "public");
-    state.assets = data.items || [];
+    state.assets = [];
+    for (let page = 1; ; page++) {
+      const data = await request('/api/v1/hapw/assets?page=' + page + '&pageSize=100', {}, 'public');
+      state.assets.push(...(data.items || []));
+      if (!data.items?.length || state.assets.length >= data.total) break;
+    }
     renderAssets();
   }
 
@@ -101,13 +106,31 @@
 
   async function loadDashboard() {
     const [rules, treasury, networks] = await Promise.all([request("/api/v1/admin/airdrop-rules"), request("/api/v1/clip/treasury", {}, "public"), request("/api/v1/admin/bnb-networks")]);
-    const options = (networks.items || []).filter(item => item.simulationOnly).map(item => '<option value="' + escapeHTML(item.chainId) + '">' + escapeHTML(item.name) + ' · ' + escapeHTML(item.nativeCurrency) + ' · ' + escapeHTML(state.lang === "zh" ? "模拟" : "simulation") + '</option>').join("");
+    const options = (networks.items || []).filter(item => item.chainId === '0x38').map(item => '<option value="' + escapeHTML(item.chainId) + '">' + escapeHTML(item.name) + '</option>').join('');
     if (options) $("chain-id").innerHTML = options;
     state.rules = rules.items || [];
     renderRules();
     await loadAssets();
+    await loadMigrations();
     const queue = await loadQueue();
     renderStats(treasury.treasury, queue);
+  }
+
+  async function loadMigrations() {
+    const data = await request('/api/v1/admin/migration-requests');
+    $('migrations-body').innerHTML = (data.items || []).map(item => '<tr><td><strong>' + escapeHTML(item.name) + ' × ' + item.quantity + '</strong><small>' + escapeHTML(item.requestNo) + '</small><small>' + escapeHTML(item.externalUserId) + ' · ' + escapeHTML(item.mappingVersion) + '</small></td><td>' + escapeHTML(item.walletAddress || '-') + '<small>' + escapeHTML(item.chainId || '-') + '</small></td><td>' + item.creditYield * item.quantity + ' credits<br>' + item.clipGrant * item.quantity + ' CLIP</td><td>' + escapeHTML(item.status) + '<small>' + escapeHTML(item.reason || '') + '</small></td><td>' + (['pending_review', 'attention_required'].includes(item.status) ? '<button class="primary-button" data-review="' + escapeHTML(item.id) + '" data-action="approve">' + text('approveMigration') + '</button>' : '') + (item.status === 'pending_review' ? '<button class="secondary-button" data-review="' + escapeHTML(item.id) + '" data-action="reject">' + text('rejectMigration') + '</button>' : '') + '</td></tr>').join('') || '<tr><td colspan="5">' + text('noMigrations') + '</td></tr>';
+    $('migrations-body').querySelectorAll('[data-review]').forEach(button => button.addEventListener('click', async () => {
+      const action = button.dataset.action;
+      const reason = action === 'reject' ? window.prompt(text('rejectReason')) : '';
+      if (action === 'reject' && !reason?.trim()) return;
+      if (action === 'approve' && !window.confirm(text('reviewConsent'))) return;
+      button.disabled = true;
+      try {
+        await request('/api/v1/admin/migration-requests/' + encodeURIComponent(button.dataset.review) + '/review', {method: 'POST', body: {action, reason, accepted: true}});
+        setFeedback('migration-feedback', text('updated'), 'success');
+      } catch (error) { setFeedback('migration-feedback', error.message, 'error'); }
+      finally { await loadMigrations(); }
+    }));
   }
 
   function showDashboard() { $("auth-panel").hidden = true; $("dashboard").hidden = false; setConnection(true, text("connected")); }
@@ -163,19 +186,6 @@
     try { await request("/api/v1/internal/airdrops/" + encodeURIComponent(id) + "/result", { method: "POST", body }, "executor"); setFeedback("result-feedback", text("resultWritten"), "success"); await loadQueue(); } catch (error) { setFeedback("result-feedback", text("statusFailed") + " · " + error.message, "error"); }
   }
 
-  async function simulateAirdrop(button) {
-    const id = button.dataset.airdropId;
-    button.disabled = true;
-    try {
-      await request("/api/v1/admin/airdrops/" + encodeURIComponent(id) + "/simulate", { method: "POST", body: JSON.stringify({ chainId: button.dataset.chainId || "0x61" }) });
-      setFeedback("create-feedback", text("simulationNote"), "success");
-      await loadDashboard();
-    } catch (error) {
-      setFeedback("create-feedback", text("simulationFailed") + " · " + error.message, "error");
-      button.disabled = false;
-    }
-  }
-
   function clearSession() { state.key = ""; state.executorKey = ""; $("dashboard").hidden = true; $("auth-panel").hidden = false; $("admin-key").value = ""; $("executor-key").value = ""; setConnection(false, text("notConnected")); setFeedback("auth-feedback", ""); }
 
   $("language-toggle").addEventListener("click", () => { state.lang = state.lang === "zh" ? "en" : "zh"; sessionStorage.setItem("clipli-admin-lang", state.lang); applyCopy(); if (!$("dashboard").hidden) { renderRules(); renderAssets(); renderQueue(); } });
@@ -187,6 +197,7 @@
   $("refresh-queue").addEventListener("click", () => loadDashboard().catch(() => setFeedback("create-feedback", text("refreshFailed"), "error")));
   $("filter-queue").addEventListener("click", () => loadQueue().catch(error => setFeedback("create-feedback", text("refreshFailed") + " · " + error.message, "error")));
   $("result-form").addEventListener("submit", writeResult);
+  $('refresh-migrations').addEventListener('click', () => loadMigrations().catch(error => setFeedback('migration-feedback', error.message, 'error')));
   makeRequestID();
   applyCopy();
 })();
