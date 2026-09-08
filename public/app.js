@@ -227,6 +227,9 @@ function api(path, options) {
       const message = t(key) === key ? t("failed") : t(key);
       const requestError = new Error(message);
       requestError.code = code;
+      if (['external_invalid_request', 'external_not_found', 'external_conflict', 'external_rate_limited'].includes(code) && typeof payload.error?.message === 'string') {
+        requestError.platformMessage = payload.error.message.slice(0, 240);
+      }
       throw requestError;
     }
     return payload.data;

@@ -67,17 +67,27 @@ function bindHaiwenForm(userId) {
   const send = document.getElementById('send-binding-code');
   const submit = document.getElementById('confirm-binding');
   const feedback = document.getElementById('binding-feedback');
+  const deliveryHelp = document.createElement('p');
+  deliveryHelp.className = 'form-feedback';
+  deliveryHelp.id = 'binding-delivery-help';
+  deliveryHelp.textContent = t(state.platformSandbox ? 'sandboxSMSHelp' : 'smsDeliveryHelp');
+  deliveryHelp.hidden = !state.platformSandbox;
+  feedback.after(deliveryHelp);
   let challenge = null;
   let busy = false;
   let resendAt = state.bindingResendAt || 0;
   let bindRequestId = '';
   const show = (message, error = false) => { feedback.textContent = message; feedback.classList.toggle('is-error', error); };
+  const showError = error => {
+    const message = error.code === 'verification_expired' ? t('bindingSessionExpired') : error instanceof TypeError && !error.code ? t('bindingNetworkError') : error.message;
+    show(message + (error.platformMessage ? ' ' + t('platformResponse') + ' ' + error.platformMessage : ''), true);
+  };
   const invalidate = () => { challenge = null; bindRequestId = ''; form.smsCode.value = ''; form.smsCode.disabled = true; submit.disabled = true; show(''); };
   const tick = () => {
     const seconds = Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
     send.disabled = busy || seconds > 0;
     send.textContent = seconds ? t('resendCode') + ' (' + seconds + 's)' : t('sendCode');
-    if (challenge && Date.parse(challenge.expiresAt) <= Date.now()) { invalidate(); show(t('error_verification_expired'), true); }
+    if (challenge && Date.parse(challenge.expiresAt) <= Date.now()) { invalidate(); show(t('bindingSessionExpired'), true); }
   };
   form.externalUserId.addEventListener('input', invalidate);
   form.phone.addEventListener('input', invalidate);
@@ -92,8 +102,9 @@ function bindHaiwenForm(userId) {
       bindRequestId = operationId('platform-bind');
       state.bindingResendAt = resendAt = Date.now() + 60000;
       form.smsCode.disabled = false; submit.disabled = false;
+      deliveryHelp.hidden = false;
       show(t('codeSent') + ' ' + (result.challenge.phoneMasked || '')); form.smsCode.focus();
-    } catch (error) { show(error.message, true); }
+    } catch (error) { showError(error); }
     finally { busy = false; form.externalUserId.readOnly = false; form.phone.readOnly = false; tick(); }
   });
   form.addEventListener('submit', async event => {
@@ -105,7 +116,7 @@ function bindHaiwenForm(userId) {
       if (result.binding?.status !== 'bound') throw new Error(t('bindingStatusUnknown'));
       toast(t('platformBound'));
       if (state.route === '/bind') await render();
-    } catch (error) { show(error.message, true); submit.disabled = false; }
+    } catch (error) { showError(error); submit.disabled = false; }
     finally { busy = false; tick(); }
   });
   clearInterval(state.bindingTimer);
